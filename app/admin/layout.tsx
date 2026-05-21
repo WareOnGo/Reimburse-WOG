@@ -1,5 +1,6 @@
 import Link from "next/link";
 import UserMenu from "../_components/UserMenu";
+import Brand from "../_components/Brand";
 import { requireAdmin } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -11,13 +12,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     <div className="app-shell">
       <header className="app-header">
         <div className="inner">
-          <Link href="/admin" className="brand">
-            <span className="brand-mark admin" aria-hidden="true">RP</span>
-            <span className="brand-text">
-              <span className="brand-title">Reimbursement</span>
-              <span className="brand-sub">Admin</span>
-            </span>
-          </Link>
+          <Brand href="/admin" subtitle="Admin" />
           <nav className="nav">
             <Link href="/admin" className="nav-link active">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

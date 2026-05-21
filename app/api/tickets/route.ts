@@ -42,9 +42,6 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
   let body: CreateBody;
   try {
     body = (await req.json()) as CreateBody;
@@ -59,13 +56,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "amount must be a non-negative number" }, { status: 400 });
   }
 
-  const last = await prisma.ticket.findFirst({
-    orderBy: { createdAt: "desc" },
-    select: { shortCode: true },
-  });
+  // Parallel: auth + last-shortcode lookup. Saves one round-trip.
+  const [user, last] = await Promise.all([
+    getCurrentUser(),
+    prisma.ticket.findFirst({
+      orderBy: { createdAt: "desc" },
+      select: { shortCode: true },
+    }),
+  ]);
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const nextNum = last?.shortCode ? Number(last.shortCode.replace(/^RB-/, "")) + 1 : 2001;
   const shortCode = `RB-${nextNum}`;
 
+  // Create ticket (with attachments if any — required for referential atomicity).
+  // Event creation is a separate, fire-and-forget audit insert.
   const ticket = await prisma.ticket.create({
     data: {
       shortCode,
@@ -75,10 +80,15 @@ export async function POST(req: Request) {
       description: body.description,
       submittedByEmpID: user.empID,
       attachments: body.attachments?.length ? { create: body.attachments } : undefined,
-      events: { create: [{ label: "Ticket submitted" }] },
     },
     select: { id: true, shortCode: true },
   });
+
+  prisma.ticketEvent
+    .create({ data: { ticketId: ticket.id, label: "Ticket submitted" } })
+    .catch(() => {
+      // best-effort audit
+    });
 
   return NextResponse.json(ticket, { status: 201 });
 }

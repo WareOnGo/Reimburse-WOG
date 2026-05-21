@@ -33,8 +33,6 @@ const STATUS_LABEL: Record<TicketStatus, string> = {
 };
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { id } = await ctx.params;
 
   let body: PatchBody;
@@ -44,10 +42,15 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
-  const existing = await prisma.ticket.findFirst({
-    where: { OR: [{ id }, { shortCode: id }] },
-    select: { id: true, status: true, submittedByEmpID: true },
-  });
+  // Parallel: auth + ticket lookup. Cuts one round-trip.
+  const [user, existing] = await Promise.all([
+    getCurrentUser(),
+    prisma.ticket.findFirst({
+      where: { OR: [{ id }, { shortCode: id }] },
+      select: { id: true, status: true, submittedByEmpID: true },
+    }),
+  ]);
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const isOwner = existing.submittedByEmpID === user.empID;
@@ -94,55 +97,69 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     return NextResponse.json({ error: "invalid status" }, { status: 400 });
   }
 
-  const removedR2Keys: string[] = [];
-  if (body.removeAttachmentIds?.length) {
-    const toRemove = await prisma.attachment.findMany({
-      where: {
-        id: { in: body.removeAttachmentIds },
-        ticketId: existing.id,
+  // Build event labels for the audit timeline (created after the main update, fire-and-forget)
+  const eventLabels: string[] = [];
+  if (editingStatus) eventLabels.push(STATUS_LABEL[body.status as TicketStatus]);
+  if (editingFields && !editingStatus) eventLabels.push("Ticket edited");
+
+  // For removed attachments: collect the R2 keys in parallel with the update
+  let removedR2Keys: string[] = [];
+  const attachmentCleanup =
+    body.removeAttachmentIds?.length
+      ? prisma.attachment
+          .findMany({
+            where: {
+              id: { in: body.removeAttachmentIds },
+              ticketId: existing.id,
+            },
+            select: { id: true, r2Key: true },
+          })
+          .then(async (rows) => {
+            removedR2Keys = rows.map((r) => r.r2Key);
+            if (rows.length === 0) return;
+            await prisma.attachment.deleteMany({
+              where: { id: { in: rows.map((r) => r.id) } },
+            });
+          })
+      : Promise.resolve();
+
+  // Single UPDATE (no nested writes → no implicit transaction, no extra SELECT).
+  // Use updateMany so we can return just `{ count }` and rely on the prior findFirst for routing.
+  await Promise.all([
+    prisma.ticket.update({
+      where: { id: existing.id },
+      data: {
+        title: body.title,
+        category: body.category,
+        amount: body.amount,
+        description: body.description,
+        status: editingStatus ? body.status : undefined,
+        attachments: body.addAttachments?.length
+          ? { create: body.addAttachments }
+          : undefined,
       },
-      select: { id: true, r2Key: true },
-    });
-    removedR2Keys.push(...toRemove.map((a) => a.r2Key));
-    await prisma.attachment.deleteMany({
-      where: {
-        id: { in: toRemove.map((a) => a.id) },
-        ticketId: existing.id,
-      },
-    });
+      select: { id: true },
+    }),
+    attachmentCleanup,
+  ]);
+
+  // Audit events: fire-and-forget. Don't block the response on this.
+  if (eventLabels.length > 0) {
+    prisma.ticketEvent
+      .createMany({
+        data: eventLabels.map((label) => ({ ticketId: existing.id, label })),
+      })
+      .catch(() => {
+        // best-effort
+      });
   }
 
-  const ticket = await prisma.ticket.update({
-    where: { id: existing.id },
-    data: {
-      title: body.title,
-      category: body.category,
-      amount: body.amount,
-      description: body.description,
-      status: editingStatus ? body.status : undefined,
-      attachments: body.addAttachments?.length
-        ? { create: body.addAttachments }
-        : undefined,
-      events: {
-        create: [
-          ...(editingStatus ? [{ label: STATUS_LABEL[body.status as TicketStatus] }] : []),
-          ...(editingFields && !editingStatus ? [{ label: "Ticket edited" }] : []),
-        ],
-      },
-    },
-    select: {
-      id: true,
-      shortCode: true,
-      status: true,
-      updatedAt: true,
-    },
-  });
-
+  // R2 cleanup is already best-effort
   for (const key of removedR2Keys) {
     deleteObject(key).catch(() => {
-      // best-effort cleanup; DB row is already gone
+      // best-effort
     });
   }
 
-  return NextResponse.json(ticket);
+  return NextResponse.json({ ok: true, id: existing.id });
 }

@@ -1,6 +1,9 @@
 import { PrismaClient } from "@prisma/client";
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+  prismaListenerRegistered?: boolean;
+};
 
 export const prisma =
   globalForPrisma.prisma ??
@@ -15,12 +18,16 @@ export const prisma =
         : [{ level: "error", emit: "stdout" }],
   });
 
-if (process.env.NODE_ENV === "development") {
+if (
+  process.env.NODE_ENV === "development" &&
+  !globalForPrisma.prismaListenerRegistered
+) {
   // @ts-expect-error - event listener typing varies by Prisma version
   prisma.$on("query", (e: { duration: number; query: string }) => {
     const sql = e.query.length > 140 ? e.query.slice(0, 140) + "…" : e.query;
     console.log(`[prisma ${e.duration}ms] ${sql}`);
   });
+  globalForPrisma.prismaListenerRegistered = true;
 }
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
