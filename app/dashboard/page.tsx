@@ -54,18 +54,30 @@ export default async function DashboardHome() {
       </div>
 
       <div className="row-split" style={{ marginBottom: "1.5rem" }}>
-        <div className="card stat-card">
+        <div className="card stat-card stat-card--pending">
           <p className="stat-label">Pending</p>
           <div className="stat-value">{pending.length}</div>
           <p className="stat-sub">
-            {pending.length === 0 ? "Nothing awaiting review" : `${fmtINR(pendingAmount)} awaiting review`}
+            {pending.length === 0 ? (
+              "Nothing awaiting review"
+            ) : (
+              <>
+                <span className="stat-amount">{fmtINR(pendingAmount)}</span> awaiting review
+              </>
+            )}
           </p>
         </div>
-        <div className="card stat-card">
+        <div className="card stat-card stat-card--approved">
           <p className="stat-label">Approved</p>
           <div className="stat-value">{approved.length}</div>
           <p className="stat-sub">
-            {approved.length === 0 ? "No approvals yet" : `${fmtINR(approvedAmount)} approved`}
+            {approved.length === 0 ? (
+              "No approvals yet"
+            ) : (
+              <>
+                <span className="stat-amount">{fmtINR(approvedAmount)}</span> approved
+              </>
+            )}
           </p>
         </div>
       </div>

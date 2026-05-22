@@ -612,6 +612,14 @@ select {
   font-size: 0.85rem;
   margin: 0;
 }
+.stat-card .stat-amount {
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+.stat-card--pending .stat-value,
+.stat-card--pending .stat-amount { color: var(--warn); }
+.stat-card--approved .stat-value,
+.stat-card--approved .stat-amount { color: var(--ok); }
 /* No colored bars on stat cards — status comes from the label */
 
 .ticket-list { display: grid; gap: 0.6rem; }
