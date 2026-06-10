@@ -23,6 +23,7 @@ const STATUS_DESCRIPTION: Record<string, string> = {
   PENDING: "Awaiting review by Finance.",
   REVIEW: "Under review by Finance.",
   APPROVED: "Approved — scheduled for reimbursement.",
+  CLEARED: "Cleared — reimbursement has been disbursed.",
   REJECTED: "Rejected — see timeline for the reason.",
   CANCELLED: "Cancelled — no further action will be taken.",
 };
@@ -58,6 +59,12 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
   const canModify = ticket.status === "PENDING" || ticket.status === "REVIEW";
   const isOwner = ticket.submittedByEmpID === user.empID;
   const status = ticket.status.toLowerCase();
+  const requestedAmount = Number(ticket.amount);
+  const approvedAmount = ticket.approvedAmount != null ? Number(ticket.approvedAmount) : null;
+  const isPartial =
+    (ticket.status === "APPROVED" || ticket.status === "CLEARED") &&
+    approvedAmount != null &&
+    approvedAmount < requestedAmount;
   const submitterLabel =
     ticket.submittedBy.verifiedNumber?.email ?? ticket.submittedByEmpID;
 
@@ -86,9 +93,18 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
           </div>
         </div>
         <div className="t-side">
-          <span className="t-amount" style={{ fontSize: "1.4rem" }}>
-            ₹{Number(ticket.amount).toLocaleString("en-IN")}
-          </span>
+          {isPartial ? (
+            <span className="t-amount" style={{ fontSize: "1.4rem", color: "var(--info)" }}>
+              ₹{approvedAmount!.toLocaleString("en-IN")}
+              <span style={{ color: "var(--slate)", fontWeight: 400, fontSize: "0.9rem", marginLeft: "0.35rem" }}>
+                of ₹{requestedAmount.toLocaleString("en-IN")}
+              </span>
+            </span>
+          ) : (
+            <span className="t-amount" style={{ fontSize: "1.4rem" }}>
+              ₹{requestedAmount.toLocaleString("en-IN")}
+            </span>
+          )}
           {canModify && isOwner && (
             <div className="t-actions">
               <Link
@@ -108,7 +124,18 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
           <div className="card">
             <h2>Details</h2>
             <dl className="detail-list">
-              <div><dt>Amount</dt><dd>₹{Number(ticket.amount).toLocaleString("en-IN")}</dd></div>
+              <div><dt>Amount</dt><dd>₹{requestedAmount.toLocaleString("en-IN")}</dd></div>
+              {isPartial && (
+                <div>
+                  <dt>Approved</dt>
+                  <dd style={{ color: "var(--info)", fontWeight: 700 }}>
+                    ₹{approvedAmount!.toLocaleString("en-IN")}{" "}
+                    <span style={{ color: "var(--slate)", fontWeight: 400, fontSize: "0.85rem" }}>
+                      of ₹{requestedAmount.toLocaleString("en-IN")}
+                    </span>
+                  </dd>
+                </div>
+              )}
               <div><dt>Category</dt><dd>{ticket.category}</dd></div>
               <div><dt>Submitted by</dt><dd>{submitterLabel}</dd></div>
               <div><dt>Submitted on</dt><dd>{fmtDateTime(ticket.createdAt)}</dd></div>

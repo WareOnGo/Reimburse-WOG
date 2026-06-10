@@ -16,6 +16,7 @@ type AttachmentInput = {
 
 type PatchBody = {
   status?: TicketStatus;
+  approvedAmount?: number | null;
   title?: string;
   category?: string;
   amount?: number;
@@ -26,6 +27,7 @@ type PatchBody = {
 
 const STATUS_LABEL: Record<TicketStatus, string> = {
   APPROVED: "Approved by Finance",
+  CLEARED: "Cleared by Finance",
   REJECTED: "Rejected by Finance",
   PENDING: "Marked pending",
   REVIEW: "Marked under review",
@@ -47,7 +49,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     getCurrentUser(),
     prisma.ticket.findFirst({
       where: { OR: [{ id }, { shortCode: id }] },
-      select: { id: true, status: true, submittedByEmpID: true },
+      select: { id: true, status: true, submittedByEmpID: true, amount: true },
     }),
   ]);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -97,9 +99,42 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     return NextResponse.json({ error: "invalid status" }, { status: 400 });
   }
 
+  // Approved amount: only meaningful when approving. A null/omitted value means a full
+  // approval (and clears any prior partial); a number is a partial approval and must be
+  // within (0, requested amount]. Admin-only is already enforced above (non-cancel ⇒ admin).
+  const requestedAmount = Number(existing.amount);
+  let approvedAmountUpdate: number | null | undefined = undefined;
+  if (editingStatus && body.status === "APPROVED") {
+    if (body.approvedAmount === undefined || body.approvedAmount === null) {
+      approvedAmountUpdate = null;
+    } else {
+      if (
+        typeof body.approvedAmount !== "number" ||
+        !isFinite(body.approvedAmount) ||
+        body.approvedAmount <= 0 ||
+        body.approvedAmount > requestedAmount
+      ) {
+        return NextResponse.json(
+          { error: `approved amount must be greater than 0 and at most ${requestedAmount}` },
+          { status: 400 },
+        );
+      }
+      // An approved amount equal to the request is just a full approval.
+      approvedAmountUpdate = body.approvedAmount < requestedAmount ? body.approvedAmount : null;
+    }
+  }
+
   // Build event labels for the audit timeline (created after the main update, fire-and-forget)
   const eventLabels: string[] = [];
-  if (editingStatus) eventLabels.push(STATUS_LABEL[body.status as TicketStatus]);
+  if (editingStatus) {
+    if (approvedAmountUpdate != null) {
+      eventLabels.push(
+        `Partially approved by Finance (₹${approvedAmountUpdate.toLocaleString("en-IN")} of ₹${requestedAmount.toLocaleString("en-IN")})`,
+      );
+    } else {
+      eventLabels.push(STATUS_LABEL[body.status as TicketStatus]);
+    }
+  }
   if (editingFields && !editingStatus) eventLabels.push("Ticket edited");
 
   // For removed attachments: collect the R2 keys in parallel with the update
@@ -134,6 +169,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
         amount: body.amount,
         description: body.description,
         status: editingStatus ? body.status : undefined,
+        approvedAmount: approvedAmountUpdate,
         attachments: body.addAttachments?.length
           ? { create: body.addAttachments }
           : undefined,

@@ -29,13 +29,17 @@ export default async function DashboardHome() {
   const approved = tickets.filter((t) => t.status === "APPROVED");
 
   const pendingAmount = pending.reduce((s, t) => s + Number(t.amount), 0);
-  const approvedAmount = approved.reduce((s, t) => s + Number(t.amount), 0);
+  const approvedAmount = approved.reduce(
+    (s, t) => s + Number(t.approvedAmount ?? t.amount),
+    0,
+  );
 
   const cards: TicketCardData[] = tickets.map((t) => ({
     shortCode: t.shortCode,
     title: t.title,
     category: t.category,
     amount: Number(t.amount),
+    approvedAmount: t.approvedAmount != null ? Number(t.approvedAmount) : null,
     status: t.status,
     createdAt: fmtDate(t.createdAt),
     attachmentCount: t.attachments.length,

@@ -57,7 +57,7 @@ export default async function AdminPage() {
       row.pendingAmount += amount;
     } else if (t.status === "APPROVED") {
       row.approvedCount += 1;
-      row.approvedAmount += amount;
+      row.approvedAmount += t.approvedAmount != null ? Number(t.approvedAmount) : amount;
     }
 
     const attachmentsWithUrls = await Promise.all(
@@ -77,6 +77,7 @@ export default async function AdminPage() {
       description: t.description,
       category: t.category,
       amount,
+      approvedAmount: t.approvedAmount != null ? Number(t.approvedAmount) : null,
       status: t.status,
       createdAt: t.createdAt.toISOString().slice(0, 10),
       submitterName,

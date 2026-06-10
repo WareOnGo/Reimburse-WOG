@@ -5,12 +5,13 @@ import TicketCard, { TicketCardData } from "./TicketCard";
 import Link from "next/link";
 import { IconPlus } from "./Icons";
 
-type Filter = "all" | "active" | "approved" | "rejected" | "cancelled";
+type Filter = "all" | "active" | "approved" | "cleared" | "rejected" | "cancelled";
 
 const TABS: { id: Filter; label: string }[] = [
   { id: "all",       label: "All" },
   { id: "active",    label: "Active" },
   { id: "approved",  label: "Approved" },
+  { id: "cleared",   label: "Cleared" },
   { id: "rejected",  label: "Rejected" },
   { id: "cancelled", label: "Cancelled" },
 ];
@@ -20,6 +21,7 @@ function matches(filter: Filter, status: TicketCardData["status"]): boolean {
     case "all":       return true;
     case "active":    return status === "PENDING" || status === "REVIEW";
     case "approved":  return status === "APPROVED";
+    case "cleared":   return status === "CLEARED";
     case "rejected":  return status === "REJECTED";
     case "cancelled": return status === "CANCELLED";
   }
@@ -29,10 +31,11 @@ export default function HistoryFilter({ tickets }: { tickets: TicketCardData[] }
   const [filter, setFilter] = useState<Filter>("all");
 
   const counts = useMemo(() => {
-    const c: Record<Filter, number> = { all: tickets.length, active: 0, approved: 0, rejected: 0, cancelled: 0 };
+    const c: Record<Filter, number> = { all: tickets.length, active: 0, approved: 0, cleared: 0, rejected: 0, cancelled: 0 };
     for (const t of tickets) {
       if (t.status === "PENDING" || t.status === "REVIEW") c.active++;
       else if (t.status === "APPROVED")  c.approved++;
+      else if (t.status === "CLEARED")   c.cleared++;
       else if (t.status === "REJECTED")  c.rejected++;
       else if (t.status === "CANCELLED") c.cancelled++;
     }

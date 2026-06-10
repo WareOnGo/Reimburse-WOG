@@ -18,7 +18,8 @@ export type AdminEntry = {
   description: string;
   category: string;
   amount: number;
-  status: "PENDING" | "REVIEW" | "APPROVED" | "REJECTED" | "CANCELLED";
+  approvedAmount: number | null;
+  status: "PENDING" | "REVIEW" | "APPROVED" | "CLEARED" | "REJECTED" | "CANCELLED";
   createdAt: string;
   submitterName: string;
   submitterEmail: string;
@@ -26,12 +27,13 @@ export type AdminEntry = {
   attachments: AttachmentLite[];
 };
 
-type StatusFilter = "all" | "pending" | "approved" | "rejected" | "cancelled";
+type StatusFilter = "all" | "pending" | "approved" | "cleared" | "rejected" | "cancelled";
 
 const STATUS_TABS: { id: StatusFilter; label: string }[] = [
   { id: "all",       label: "All" },
   { id: "pending",   label: "Pending" },
   { id: "approved",  label: "Approved" },
+  { id: "cleared",   label: "Cleared" },
   { id: "rejected",  label: "Rejected" },
   { id: "cancelled", label: "Cancelled" },
 ];
@@ -41,6 +43,7 @@ function matchesStatus(filter: StatusFilter, status: AdminEntry["status"]): bool
     case "all":       return true;
     case "pending":   return status === "PENDING" || status === "REVIEW";
     case "approved":  return status === "APPROVED";
+    case "cleared":   return status === "CLEARED";
     case "rejected":  return status === "REJECTED";
     case "cancelled": return status === "CANCELLED";
   }
@@ -57,6 +60,7 @@ function toReviewTicket(e: AdminEntry): ReviewTicket {
     title: e.title,
     category: e.category,
     amount: e.amount,
+    approvedAmount: e.approvedAmount,
     description: e.description,
     status: e.status,
     createdAt: e.createdAt,
@@ -82,10 +86,11 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
   }, [entries]);
 
   const counts = useMemo(() => {
-    const c: Record<StatusFilter, number> = { all: entries.length, pending: 0, approved: 0, rejected: 0, cancelled: 0 };
+    const c: Record<StatusFilter, number> = { all: entries.length, pending: 0, approved: 0, cleared: 0, rejected: 0, cancelled: 0 };
     for (const e of entries) {
       if (e.status === "PENDING" || e.status === "REVIEW") c.pending++;
       else if (e.status === "APPROVED")  c.approved++;
+      else if (e.status === "CLEARED")   c.cleared++;
       else if (e.status === "REJECTED")  c.rejected++;
       else if (e.status === "CANCELLED") c.cancelled++;
     }
@@ -180,7 +185,8 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                 <th>Ticket</th>
                 <th>Employee</th>
                 <th className="title-cell">Title / Details</th>
-                <th className="num">Amount</th>
+                <th className="num">Requested</th>
+                <th className="num">Approved</th>
                 <th className="num">Files</th>
                 <th>Status</th>
               </tr>
@@ -188,7 +194,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: "center", color: "var(--slate)", padding: "1.5rem" }}>
+                  <td colSpan={7} style={{ textAlign: "center", color: "var(--slate)", padding: "1.5rem" }}>
                     {entries.length === 0 ? "No tickets submitted." : "No tickets match your filters."}
                   </td>
                 </tr>
@@ -216,6 +222,13 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                       </div>
                     </td>
                     <td className="num">{formatINR(e.amount)}</td>
+                    <td className="num">
+                      {e.status === "APPROVED" || e.status === "CLEARED" ? (
+                        formatINR(e.approvedAmount ?? e.amount)
+                      ) : (
+                        <span style={{ color: "var(--slate)" }}>—</span>
+                      )}
+                    </td>
                     <td className="num" style={{ color: e.attachments.length === 0 ? "var(--slate)" : "var(--blue)" }}>
                       {e.attachments.length}
                     </td>

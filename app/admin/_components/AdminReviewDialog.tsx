@@ -25,8 +25,9 @@ export type ReviewTicket = {
   title: string;
   category: string;
   amount: number;
+  approvedAmount: number | null;
   description: string;
-  status: "PENDING" | "REVIEW" | "APPROVED" | "REJECTED" | "CANCELLED";
+  status: "PENDING" | "REVIEW" | "APPROVED" | "CLEARED" | "REJECTED" | "CANCELLED";
   createdAt: string;
   submitterName: string;
   submitterEmail: string;
@@ -46,9 +47,11 @@ type Props = {
 
 export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
   const router = useRouter();
-  const [busy, setBusy] = useState<"APPROVED" | "REJECTED" | "PENDING" | null>(null);
+  const [busy, setBusy] = useState<"APPROVED" | "CLEARED" | "REJECTED" | "PENDING" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [partialOpen, setPartialOpen] = useState(false);
+  const [partialAmount, setPartialAmount] = useState("");
 
   useEffect(() => setMounted(true), []);
 
@@ -65,6 +68,8 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
     if (open) {
       setError(null);
       setBusy(null);
+      setPartialOpen(false);
+      setPartialAmount("");
     }
   }, [open, ticket?.id]);
 
@@ -72,7 +77,7 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
 
   const statusLower = ticket.status.toLowerCase();
 
-  type Action = "APPROVED" | "REJECTED" | "PENDING";
+  type Action = "APPROVED" | "CLEARED" | "REJECTED" | "PENDING";
   type ActionDef = { target: Action; label: string; className: string };
 
   const actions: ActionDef[] = (() => {
@@ -86,6 +91,12 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
       return [
         { target: "PENDING",  label: "Reopen",            className: "btn btn-ghost" },
         { target: "REJECTED", label: "Mark as rejected",  className: "btn btn-reject" },
+        { target: "CLEARED",  label: "Mark as cleared",   className: "btn btn-approve" },
+      ];
+    }
+    if (ticket.status === "CLEARED") {
+      return [
+        { target: "APPROVED", label: "Revert to approved", className: "btn btn-ghost" },
       ];
     }
     if (ticket.status === "REJECTED") {
@@ -102,12 +113,13 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
 
   const noteForCurrent: string | null = (() => {
     if (ticket.status === "APPROVED")  return "This ticket is currently approved. Changing status will notify the employee.";
+    if (ticket.status === "CLEARED")   return "This ticket has been cleared and reimbursed. Reverting will notify the employee.";
     if (ticket.status === "REJECTED")  return "This ticket is currently rejected. Changing status will notify the employee.";
     if (ticket.status === "CANCELLED") return "This ticket was cancelled by the employee. Restoring puts it back into the pending queue.";
     return null;
   })();
 
-  async function act(target: Action) {
+  async function act(target: Action, approvedAmount?: number) {
     if (busy || !ticket) return;
     setBusy(target);
     setError(null);
@@ -115,7 +127,9 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
       const res = await fetch(`/api/tickets/${ticket.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status: target }),
+        body: JSON.stringify(
+          approvedAmount !== undefined ? { status: target, approvedAmount } : { status: target },
+        ),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -130,6 +144,30 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
       setBusy(null);
     }
   }
+
+  // Partial approval is available while reviewing and while already (fully) approved.
+  const canPartiallyApprove =
+    ticket.status === "PENDING" || ticket.status === "REVIEW" || ticket.status === "APPROVED";
+
+  function openPartial() {
+    setError(null);
+    setPartialAmount(String(ticket!.approvedAmount ?? ticket!.amount));
+    setPartialOpen(true);
+  }
+
+  function confirmPartial() {
+    const val = Number(partialAmount);
+    if (!isFinite(val) || val <= 0 || val > ticket!.amount) {
+      setError(`Enter an amount greater than 0 and at most ${fmtINR(ticket!.amount)}.`);
+      return;
+    }
+    act("APPROVED", val);
+  }
+
+  const isPartial =
+    (ticket.status === "APPROVED" || ticket.status === "CLEARED") &&
+    ticket.approvedAmount != null &&
+    ticket.approvedAmount < ticket.amount;
 
   const node = (
     <div
@@ -182,6 +220,17 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
             </dd>
             <dt style={{ color: "var(--slate)" }}>Amount</dt>
             <dd style={{ margin: 0, fontWeight: 700, color: "var(--blue)" }}>{fmtINR(ticket.amount)}</dd>
+            {isPartial && (
+              <>
+                <dt style={{ color: "var(--slate)" }}>Approved</dt>
+                <dd style={{ margin: 0, fontWeight: 700, color: "var(--info)" }}>
+                  {fmtINR(ticket.approvedAmount!)}{" "}
+                  <span style={{ color: "var(--slate)", fontWeight: 400, fontSize: "0.82rem" }}>
+                    of {fmtINR(ticket.amount)}
+                  </span>
+                </dd>
+              </>
+            )}
           </dl>
 
           <div>
@@ -239,34 +288,89 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
               {noteForCurrent}
             </div>
           )}
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", flexWrap: "wrap" }}>
+          {partialOpen && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+              <label htmlFor="partial-amount" style={{ fontSize: "0.82rem", color: "var(--slate)" }}>
+                Approved amount
+              </label>
+              <input
+                id="partial-amount"
+                type="number"
+                value={partialAmount}
+                onChange={(e) => setPartialAmount(e.target.value)}
+                min={0}
+                max={ticket.amount}
+                step="0.01"
+                autoFocus
+                disabled={busy !== null}
+                style={{ width: 140 }}
+              />
+              <span style={{ color: "var(--slate)", fontSize: "0.82rem" }}>
+                of {fmtINR(ticket.amount)}
+              </span>
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
             <button
               type="button"
               className="btn btn-ghost"
-              onClick={onClose}
+              onClick={() => (partialOpen ? (setPartialOpen(false), setError(null)) : onClose())}
               disabled={busy !== null}
             >
-              Close
+              {partialOpen ? "Back" : "Close"}
             </button>
-            {actions.map((a) => (
-              <button
-                key={a.target}
-                type="button"
-                className={a.className}
-                onClick={() => act(a.target)}
-                disabled={busy !== null}
-                aria-busy={busy === a.target}
-              >
-                {busy === a.target ? (
-                  <>
-                    <span className="dot-spinner" aria-hidden="true" />
-                    Working…
-                  </>
-                ) : (
-                  a.label
-                )}
-              </button>
-            ))}
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {partialOpen ? (
+                <button
+                  type="button"
+                  className="btn btn-approve"
+                  onClick={confirmPartial}
+                  disabled={busy !== null}
+                  aria-busy={busy === "APPROVED"}
+                >
+                  {busy === "APPROVED" ? (
+                    <>
+                      <span className="dot-spinner" aria-hidden="true" />
+                      Working…
+                    </>
+                  ) : (
+                    "Confirm partial approval"
+                  )}
+                </button>
+              ) : (
+                <>
+                  {canPartiallyApprove && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={openPartial}
+                      disabled={busy !== null}
+                    >
+                      Partial approve
+                    </button>
+                  )}
+                  {actions.map((a) => (
+                    <button
+                      key={a.target}
+                      type="button"
+                      className={a.className}
+                      onClick={() => act(a.target)}
+                      disabled={busy !== null}
+                      aria-busy={busy === a.target}
+                    >
+                      {busy === a.target ? (
+                        <>
+                          <span className="dot-spinner" aria-hidden="true" />
+                          Working…
+                        </>
+                      ) : (
+                        a.label
+                      )}
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>

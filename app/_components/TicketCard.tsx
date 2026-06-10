@@ -11,7 +11,8 @@ export type TicketCardData = {
   title: string;
   category: string;
   amount: number;
-  status: "PENDING" | "REVIEW" | "APPROVED" | "REJECTED" | "CANCELLED";
+  approvedAmount: number | null;
+  status: "PENDING" | "REVIEW" | "APPROVED" | "CLEARED" | "REJECTED" | "CANCELLED";
   createdAt: string;
   attachmentCount: number;
 };
@@ -24,6 +25,10 @@ export default function TicketCard({ ticket }: { ticket: TicketCardData }) {
   const router = useRouter();
   const status = ticket.status.toLowerCase();
   const canModify = ticket.status === "PENDING" || ticket.status === "REVIEW";
+  const isPartial =
+    (ticket.status === "APPROVED" || ticket.status === "CLEARED") &&
+    ticket.approvedAmount != null &&
+    ticket.approvedAmount < ticket.amount;
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -81,7 +86,16 @@ export default function TicketCard({ ticket }: { ticket: TicketCardData }) {
 
       <div className="t-side">
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <span className="t-amount">{fmtINR(ticket.amount)}</span>
+          {isPartial ? (
+            <span className="t-amount" style={{ color: "var(--info)" }}>
+              {fmtINR(ticket.approvedAmount!)}
+              <span style={{ color: "var(--slate)", fontWeight: 400, fontSize: "0.8rem", marginLeft: "0.3rem" }}>
+                of {fmtINR(ticket.amount)}
+              </span>
+            </span>
+          ) : (
+            <span className="t-amount">{fmtINR(ticket.amount)}</span>
+          )}
           <span className={`badge badge-${status}`}>
             {cancelling ? "Cancelling…" : status}
           </span>

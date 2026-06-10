@@ -16,6 +16,7 @@
   --ok: #2d7a4a;
   --warn: #c47a17;
   --bad: #b32d2d;
+  --info: #1d6fc4;
 
   /* Shape — sharp corners, no soft shadows */
   --radius-sm: 4px;
@@ -167,6 +168,7 @@ select {
 .badge-pending  { color: var(--warn); border-color: var(--warn); }
 .badge-review   { background: var(--blue); color: var(--ivory); border-color: var(--blue); }
 .badge-approved { color: var(--ok);   border-color: var(--ok); }
+.badge-cleared  { background: var(--info); color: var(--ivory); border-color: var(--info); }
 .badge-rejected { color: var(--bad);  border-color: var(--bad); }
 .badge-cancelled {
   border-style: dashed;
