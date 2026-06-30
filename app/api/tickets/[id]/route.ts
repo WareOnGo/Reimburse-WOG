@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { TicketStatus } from "@prisma/client";
 import { getCurrentUser } from "@/lib/auth";
 import { deleteObject } from "@/lib/r2";
+import { sendPartialApprovalEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 
@@ -50,7 +51,18 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     getCurrentUser(),
     prisma.ticket.findFirst({
       where: { OR: [{ id }, { shortCode: id }] },
-      select: { id: true, status: true, submittedByEmpID: true, amount: true },
+      select: {
+        id: true,
+        status: true,
+        submittedByEmpID: true,
+        amount: true,
+        approvedAmount: true,
+        shortCode: true,
+        title: true,
+        submittedBy: {
+          select: { verifiedNumber: { select: { email: true, name: true } } },
+        },
+      },
     }),
   ]);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -218,6 +230,29 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     deleteObject(key).catch(() => {
       // best-effort
     });
+  }
+
+  // Notify the employee when a *new* partial approval is recorded. Debounce by content:
+  // only send when the sanctioned amount actually changes vs what was already stored, so
+  // re-confirming the same partial (double-click / re-open + confirm) won't resend.
+  // `approvedAmountUpdate` is non-null only for a genuine partial (a number < requested).
+  // Awaited (not fire-and-forget) so the send completes before the serverless fn returns;
+  // sendPartialApprovalEmail never throws, so a mail failure can't break the response.
+  if (
+    approvedAmountUpdate != null &&
+    Number(existing.approvedAmount ?? -1) !== approvedAmountUpdate
+  ) {
+    const vn = existing.submittedBy?.verifiedNumber;
+    if (vn?.email) {
+      await sendPartialApprovalEmail({
+        to: vn.email,
+        name: vn.name ?? "there",
+        shortCode: existing.shortCode,
+        title: existing.title,
+        requestedAmount,
+        approvedAmount: approvedAmountUpdate,
+      });
+    }
   }
 
   return NextResponse.json({ ok: true, id: existing.id });
