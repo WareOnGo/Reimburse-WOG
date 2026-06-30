@@ -121,7 +121,13 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const requestedAmount = Number(existing.amount);
   let approvedAmountUpdate: number | null | undefined = undefined;
   if (editingStatus && body.status === "APPROVED") {
-    if (body.approvedAmount === undefined || body.approvedAmount === null) {
+    if (existing.status === "CLEARED" && body.approvedAmount === undefined) {
+      // Reverting a cleared ticket back to approved is a pure status change — preserve the
+      // previously sanctioned (possibly partial) amount rather than collapsing it to full.
+      // Leaving approvedAmountUpdate undefined makes Prisma skip the column. To change the
+      // sanctioned amount during a revert, pass approvedAmount explicitly.
+      approvedAmountUpdate = undefined;
+    } else if (body.approvedAmount === undefined || body.approvedAmount === null) {
       approvedAmountUpdate = null;
     } else {
       if (

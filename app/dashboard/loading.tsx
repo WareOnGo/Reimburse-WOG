@@ -11,9 +11,10 @@ export default function Loading() {
         </div>
       </div>
 
-      <div className="row-split" style={{ marginBottom: "1.5rem" }}>
+      <div className="stat-grid" style={{ marginBottom: "1.5rem" }}>
         <StatCardSkeleton accent="pending" />
         <StatCardSkeleton accent="approved" />
+        <StatCardSkeleton accent="cleared" />
       </div>
 
       <div className="section-label" style={{ marginTop: 0 }}>Recent activity</div>

@@ -622,6 +622,8 @@ select {
 .stat-card--pending .stat-amount { color: var(--warn); }
 .stat-card--approved .stat-value,
 .stat-card--approved .stat-amount { color: var(--ok); }
+.stat-card--cleared .stat-value,
+.stat-card--cleared .stat-amount { color: var(--info); }
 /* No colored bars on stat cards — status comes from the label */
 
 .ticket-list { display: grid; gap: 0.6rem; }
@@ -690,6 +692,12 @@ select {
 .row-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
 }
 
@@ -1025,6 +1033,7 @@ select {
   .app-main { padding: 1.25rem 1rem 3rem; }
   .card { padding: 1.1rem; }
   .row-split { grid-template-columns: 1fr; }
+  .stat-grid { grid-template-columns: 1fr; }
   .ticket-row { grid-template-columns: 1fr; }
   .ticket-row .right { display: flex; justify-content: space-between; align-items: center; }
   .auth-card { padding: 1.5rem; }

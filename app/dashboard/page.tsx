@@ -27,9 +27,14 @@ export default async function DashboardHome() {
 
   const pending = tickets.filter((t) => t.status === "PENDING" || t.status === "REVIEW");
   const approved = tickets.filter((t) => t.status === "APPROVED");
+  const cleared = tickets.filter((t) => t.status === "CLEARED");
 
   const pendingAmount = pending.reduce((s, t) => s + Number(t.amount), 0);
   const approvedAmount = approved.reduce(
+    (s, t) => s + Number(t.approvedAmount ?? t.amount),
+    0,
+  );
+  const clearedAmount = cleared.reduce(
     (s, t) => s + Number(t.approvedAmount ?? t.amount),
     0,
   );
@@ -57,7 +62,7 @@ export default async function DashboardHome() {
         </Link>
       </div>
 
-      <div className="row-split" style={{ marginBottom: "1.5rem" }}>
+      <div className="stat-grid" style={{ marginBottom: "1.5rem" }}>
         <div className="card stat-card stat-card--pending">
           <p className="stat-label">Pending</p>
           <div className="stat-value">{pending.length}</div>
@@ -80,6 +85,19 @@ export default async function DashboardHome() {
             ) : (
               <>
                 <span className="stat-amount">{fmtINR(approvedAmount)}</span> approved
+              </>
+            )}
+          </p>
+        </div>
+        <div className="card stat-card stat-card--cleared">
+          <p className="stat-label">Cleared</p>
+          <div className="stat-value">{cleared.length}</div>
+          <p className="stat-sub">
+            {cleared.length === 0 ? (
+              "Nothing reimbursed yet"
+            ) : (
+              <>
+                <span className="stat-amount">{fmtINR(clearedAmount)}</span> reimbursed
               </>
             )}
           </p>

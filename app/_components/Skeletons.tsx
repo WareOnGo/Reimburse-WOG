@@ -48,7 +48,7 @@ export function CardSkeleton({ lines = 3 }: { lines?: number }) {
   );
 }
 
-export function StatCardSkeleton({ accent }: { accent?: "pending" | "approved" | "rejected" }) {
+export function StatCardSkeleton({ accent }: { accent?: "pending" | "approved" | "cleared" | "rejected" }) {
   return (
     <div className={`card stat-card ${accent ? `accent-${accent}` : ""}`}>
       <span className="skeleton" style={{ height: "0.8rem", width: "5rem", display: "block", marginBottom: "0.6rem" }} />
