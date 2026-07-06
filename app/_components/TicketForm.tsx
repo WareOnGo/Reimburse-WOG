@@ -2,10 +2,24 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { uploadToR2, type UploadedAttachment } from "./upload";
 
 const CATEGORIES = ["Travel", "Meals", "Software", "Office Supplies", "Other"];
+const MAX_FILE_MB = 25;
 
 type ExistingAttachment = { id: string; name: string; sizeLabel: string };
+
+type UploadItem = {
+  id: string;
+  file: File;
+  name: string;
+  sizeBytes: number;
+  progress: number;
+  status: "uploading" | "done" | "error";
+  error?: string;
+  canRetry?: boolean;
+  result?: UploadedAttachment;
+};
 
 type Props = {
   mode?: "create" | "edit";
@@ -20,77 +34,26 @@ type Props = {
   };
 };
 
-type SignResponse = { url: string; key: string };
-
 function formatBytes(b: number) {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function kindFor(file: File): "IMAGE" | "DOCUMENT" {
-  return file.type.startsWith("image/") ? "IMAGE" : "DOCUMENT";
-}
-
-async function uploadOne(
-  file: File,
-  ticketIdForKey: string,
-): Promise<{ name: string; kind: "IMAGE" | "DOCUMENT"; contentType: string; sizeBytes: number; r2Key: string }> {
-  const signRes = await fetch("/api/r2/sign", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      filename: file.name,
-      contentType: file.type || "application/octet-stream",
-      ticketId: ticketIdForKey,
-    }),
-  });
-  if (!signRes.ok) {
-    const data = await signRes.json().catch(() => ({}));
-    throw new Error(data.error ?? "could not get upload URL");
-  }
-  const { url, key } = (await signRes.json()) as SignResponse;
-
-  // Direct-to-R2 PUT. Retry once on a transient failure (network blip or 5xx),
-  // which is common on mobile connections; a 4xx is permanent so we surface it.
-  let lastErr: unknown = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const putRes = await fetch(url, {
-        method: "PUT",
-        headers: { "content-type": file.type || "application/octet-stream" },
-        body: file,
-      });
-      if (putRes.ok) {
-        lastErr = null;
-        break;
-      }
-      lastErr = new Error(`upload failed (${putRes.status})`);
-      if (putRes.status < 500) throw lastErr; // client error — retrying won't help
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  if (lastErr) throw lastErr instanceof Error ? lastErr : new Error("upload failed");
-
-  return {
-    name: file.name,
-    kind: kindFor(file),
-    contentType: file.type || "application/octet-stream",
-    sizeBytes: file.size,
-    r2Key: key,
-  };
+function newItemId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export default function TicketForm({ mode = "create", ticketId, initial }: Props) {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement | null>(null);
   const [title, setTitle] = useState(initial?.title ?? "");
   const [category, setCategory] = useState(initial?.category ?? CATEGORIES[0]);
   const [amount, setAmount] = useState(initial?.amount ?? "");
   const [expenseDate, setExpenseDate] = useState(initial?.expenseDate ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [files, setFiles] = useState<File[]>([]);
+  const [items, setItems] = useState<UploadItem[]>([]);
   const [existing, setExisting] = useState<ExistingAttachment[]>(initial?.existingAttachments ?? []);
   const removedExistingRef = useRef<Set<string>>(new Set());
   const [dragging, setDragging] = useState(false);
@@ -99,18 +62,68 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
   const [error, setError] = useState<string | null>(null);
 
   const isEdit = mode === "edit";
+  const ticketKeyHint = isEdit && ticketId ? ticketId : "draft";
+
+  const uploadsPending = items.some((it) => it.status === "uploading");
+  const failedUploads = items.filter((it) => it.status === "error").length;
+
+  function patchItem(id: string, patch: Partial<UploadItem>) {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  }
+
+  // Files upload as soon as they're picked, each independently, so a flaky
+  // connection costs one file's retry — never the whole submission.
+  function startUpload(id: string, file: File) {
+    patchItem(id, { status: "uploading", progress: 0, error: undefined });
+    uploadToR2(file, ticketKeyHint, (pct) => patchItem(id, { progress: pct }))
+      .then((result) =>
+        patchItem(id, {
+          status: "done",
+          progress: 100,
+          result,
+          name: result.name,
+          sizeBytes: result.sizeBytes,
+        }),
+      )
+      .catch((err) =>
+        patchItem(id, {
+          status: "error",
+          canRetry: true,
+          error: err instanceof Error ? err.message : "upload failed",
+        }),
+      );
+  }
 
   function addFiles(list: FileList | null) {
     if (!list) return;
-    const next = [...files];
+    const added: UploadItem[] = [];
     for (const f of Array.from(list)) {
-      if (!next.find((x) => x.name === f.name && x.size === f.size)) next.push(f);
+      const dupe = (x: UploadItem) => x.file.name === f.name && x.file.size === f.size;
+      if (items.some(dupe) || added.some(dupe)) continue;
+      const item: UploadItem = {
+        id: newItemId(),
+        file: f,
+        name: f.name,
+        sizeBytes: f.size,
+        progress: 0,
+        status: "uploading",
+      };
+      if (f.size > MAX_FILE_MB * 1024 * 1024) {
+        item.status = "error";
+        item.error = `larger than ${MAX_FILE_MB} MB — attach a smaller file`;
+        item.canRetry = false;
+      }
+      added.push(item);
     }
-    setFiles(next);
+    if (!added.length) return;
+    setItems((prev) => [...prev, ...added]);
+    for (const it of added) {
+      if (it.status === "uploading") startUpload(it.id, it.file);
+    }
   }
 
-  function removeFile(idx: number) {
-    setFiles(files.filter((_, i) => i !== idx));
+  function removeItem(id: string) {
+    setItems((prev) => prev.filter((it) => it.id !== id));
   }
 
   function removeExisting(id: string) {
@@ -128,11 +141,20 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
       setError("Amount must be a non-negative number");
       return;
     }
+    if (uploadsPending) {
+      setError("Attachments are still uploading — give them a moment to finish.");
+      return;
+    }
+    if (failedUploads > 0) {
+      setError("Some attachments failed to upload. Retry or remove them before submitting.");
+      return;
+    }
 
     setSubmitting(true);
     try {
-      const ticketKeyHint = isEdit && ticketId ? ticketId : "draft";
-      const uploaded = await Promise.all(files.map((f) => uploadOne(f, ticketKeyHint)));
+      const uploaded = items
+        .map((it) => it.result)
+        .filter((r): r is UploadedAttachment => Boolean(r));
 
       if (isEdit && ticketId) {
         const removed = Array.from(removedExistingRef.current);
@@ -277,6 +299,9 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
 
       <div className="field">
         <label>{isEdit ? "Add more attachments" : "Attachments"}</label>
+        {/* The label itself forwards taps to the nested input — don't add an
+            onClick that calls input.click(), it double-opens the picker on
+            some mobile browsers. */}
         <label
           className={`dropzone ${dragging ? "is-drag" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -286,28 +311,42 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
             setDragging(false);
             addFiles(e.dataTransfer.files);
           }}
-          onClick={() => inputRef.current?.click()}
         >
           <div className="label-strong">Drop files here or tap to browse</div>
           <div className="label-sub">Receipts, invoices, screenshots · PDF, PNG, JPG · multiple files supported</div>
           <input
-            ref={inputRef}
             type="file"
             multiple
-            accept="image/*,application/pdf"
+            accept="image/*,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.pdf"
             onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
           />
         </label>
 
-        {files.length > 0 && (
+        {items.length > 0 && (
           <div className="file-list">
-            {files.map((f, i) => (
-              <div key={`${f.name}-${i}`} className="file-item">
-                <div>
-                  <div className="name">{f.name}</div>
-                  <div className="size">{formatBytes(f.size)}</div>
+            {items.map((it) => (
+              <div key={it.id} className="file-item">
+                <div className="file-info">
+                  <div className="name">{it.name}</div>
+                  <div className="size">
+                    {it.status === "uploading" && `Uploading… ${it.progress}%`}
+                    {it.status === "done" && `${formatBytes(it.sizeBytes)} · uploaded`}
+                    {it.status === "error" && <span className="err">{it.error}</span>}
+                  </div>
+                  {it.status === "uploading" && (
+                    <div className="progress-track">
+                      <div className="progress-bar" style={{ width: `${it.progress}%` }} />
+                    </div>
+                  )}
                 </div>
-                <button type="button" onClick={() => removeFile(i)}>Remove</button>
+                <div className="file-actions">
+                  {it.status === "error" && it.canRetry && (
+                    <button type="button" className="retry" onClick={() => startUpload(it.id, it.file)}>
+                      Retry
+                    </button>
+                  )}
+                  <button type="button" onClick={() => removeItem(it.id)}>Remove</button>
+                </div>
               </div>
             ))}
           </div>
@@ -315,8 +354,14 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
       </div>
 
       <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
-        <button type="submit" className="btn btn-primary" disabled={submitting}>
-          {submitting ? "Saving…" : isEdit ? "Save changes" : "Submit ticket"}
+        <button type="submit" className="btn btn-primary" disabled={submitting || uploadsPending}>
+          {uploadsPending
+            ? "Uploading attachments…"
+            : submitting
+              ? "Saving…"
+              : isEdit
+                ? "Save changes"
+                : "Submit ticket"}
         </button>
         <button
           type="button"

@@ -688,6 +688,29 @@ select {
   cursor: pointer;
 }
 .file-item button:hover { text-decoration: underline; }
+.file-item .file-info { flex: 1; min-width: 0; }
+.file-item .file-actions {
+  display: flex;
+  gap: 0.85rem;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 0.85rem;
+}
+.file-item .file-actions .retry { color: var(--blue); }
+.file-item .err { color: var(--bad); }
+.file-item .progress-track {
+  margin-top: 0.4rem;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.file-item .progress-bar {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
 
 .row-split {
   display: grid;
