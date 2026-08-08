@@ -30,6 +30,8 @@ type Props = {
     amount?: string;
     description?: string;
     expenseDate?: string;
+    dealName?: string;
+    clientName?: string;
     existingAttachments?: ExistingAttachment[];
   };
 };
@@ -52,6 +54,8 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
   const [category, setCategory] = useState(initial?.category ?? CATEGORIES[0]);
   const [amount, setAmount] = useState(initial?.amount ?? "");
   const [expenseDate, setExpenseDate] = useState(initial?.expenseDate ?? "");
+  const [dealName, setDealName] = useState(initial?.dealName ?? "");
+  const [clientName, setClientName] = useState(initial?.clientName ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [items, setItems] = useState<UploadItem[]>([]);
   const [existing, setExisting] = useState<ExistingAttachment[]>(initial?.existingAttachments ?? []);
@@ -167,6 +171,8 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
             amount: amt,
             description,
             expenseDate: expenseDate || null,
+            dealName: dealName.trim(),
+            clientName: clientName.trim(),
             addAttachments: uploaded,
             removeAttachmentIds: removed,
           }),
@@ -185,6 +191,8 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
             amount: amt,
             description,
             expenseDate: expenseDate || null,
+            dealName: dealName.trim(),
+            clientName: clientName.trim(),
             attachments: uploaded,
           }),
         });
@@ -252,6 +260,31 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
           />
+        </div>
+      </div>
+
+      <div className="row-split">
+        <div className="field">
+          <label htmlFor="dealName">Deal name</label>
+          <input
+            id="dealName"
+            required
+            placeholder="e.g. 50,000 sqft warehouse — Bhiwandi, Mumbai"
+            value={dealName}
+            onChange={(e) => setDealName(e.target.value)}
+          />
+          <div className="hint">Size, area and city of the deal this expense relates to.</div>
+        </div>
+        <div className="field">
+          <label htmlFor="clientName">Client name</label>
+          <input
+            id="clientName"
+            required
+            placeholder="e.g. Delhivery Supply Chain Pvt Ltd"
+            value={clientName}
+            onChange={(e) => setClientName(e.target.value)}
+          />
+          <div className="hint">The company you were dealing with.</div>
         </div>
       </div>
 

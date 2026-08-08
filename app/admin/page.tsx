@@ -120,6 +120,8 @@ export default async function AdminPage() {
       amount,
       approvedAmount: t.approvedAmount != null ? Number(t.approvedAmount) : null,
       expenseDate: t.expenseDate ? t.expenseDate.toISOString().slice(0, 10) : null,
+      dealName: t.dealName,
+      clientName: t.clientName,
       status: t.status,
       createdAt: t.createdAt.toISOString().slice(0, 10),
       submitterName,

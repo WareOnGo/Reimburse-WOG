@@ -62,6 +62,9 @@ export type PartialApprovalEmail = {
   title: string;
   requestedAmount: number;
   approvedAmount: number;
+  /** Null on tickets raised before these fields existed — their rows are then omitted. */
+  dealName?: string | null;
+  clientName?: string | null;
 };
 
 /** Builds and sends the "your reimbursement was partially approved" notification. */
@@ -79,6 +82,8 @@ export async function sendPartialApprovalEmail(d: PartialApprovalEmail): Promise
     ``,
     `Your reimbursement request ${d.shortCode} ("${d.title}") has been partially approved by Finance.`,
     ``,
+    ...(d.clientName ? [`Client:         ${d.clientName}`] : []),
+    ...(d.dealName ? [`Deal:           ${d.dealName}`] : []),
     `Requested:      ${requested}`,
     `Approved:       ${approved}`,
     `Not approved:   ${notApproved}`,
@@ -99,6 +104,22 @@ export async function sendPartialApprovalEmail(d: PartialApprovalEmail): Promise
       <strong>partially approved</strong> by Finance.
     </p>
     <table style="border-collapse:collapse;font-size:14px;margin:0 0 18px">
+      ${
+        d.clientName
+          ? `<tr>
+        <td style="padding:4px 16px 4px 0;color:#6c757d">Client</td>
+        <td style="padding:4px 0">${escapeHtml(d.clientName)}</td>
+      </tr>`
+          : ""
+      }
+      ${
+        d.dealName
+          ? `<tr>
+        <td style="padding:4px 16px 4px 0;color:#6c757d">Deal</td>
+        <td style="padding:4px 0">${escapeHtml(d.dealName)}</td>
+      </tr>`
+          : ""
+      }
       <tr>
         <td style="padding:4px 16px 4px 0;color:#6c757d">Requested</td>
         <td style="padding:4px 0;font-weight:700">${requested}</td>

@@ -18,6 +18,8 @@ type CreateBody = {
   amount: number;
   description: string;
   expenseDate?: string | null;
+  dealName: string;
+  clientName: string;
   attachments?: AttachmentInput[];
 };
 
@@ -52,6 +54,11 @@ export async function POST(req: Request) {
 
   if (!body.title || !body.category || !body.description) {
     return NextResponse.json({ error: "missing required fields" }, { status: 400 });
+  }
+  const dealName = typeof body.dealName === "string" ? body.dealName.trim() : "";
+  const clientName = typeof body.clientName === "string" ? body.clientName.trim() : "";
+  if (!dealName || !clientName) {
+    return NextResponse.json({ error: "deal name and client name are required" }, { status: 400 });
   }
   if (typeof body.amount !== "number" || !isFinite(body.amount) || body.amount < 0) {
     return NextResponse.json({ error: "amount must be a non-negative number" }, { status: 400 });
@@ -89,6 +96,8 @@ export async function POST(req: Request) {
       amount: body.amount,
       description: body.description,
       expenseDate,
+      dealName,
+      clientName,
       submittedByEmpID: user.empID,
       attachments: body.attachments?.length ? { create: body.attachments } : undefined,
     },

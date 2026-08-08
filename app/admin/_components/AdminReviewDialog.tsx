@@ -27,6 +27,8 @@ export type ReviewTicket = {
   amount: number;
   approvedAmount: number | null;
   expenseDate: string | null;
+  dealName: string | null;
+  clientName: string | null;
   description: string;
   status: "PENDING" | "REVIEW" | "APPROVED" | "CLEARED" | "REJECTED" | "CANCELLED";
   createdAt: string;
@@ -231,6 +233,18 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
               {ticket.submitterName} · {ticket.empID}
               <div style={{ color: "var(--slate)", fontSize: "0.78rem" }}>{ticket.submitterEmail}</div>
             </dd>
+            {ticket.clientName && (
+              <>
+                <dt style={{ color: "var(--slate)" }}>Client</dt>
+                <dd style={{ margin: 0 }}>{ticket.clientName}</dd>
+              </>
+            )}
+            {ticket.dealName && (
+              <>
+                <dt style={{ color: "var(--slate)" }}>Deal</dt>
+                <dd style={{ margin: 0 }}>{ticket.dealName}</dd>
+              </>
+            )}
             {ticket.expenseDate && (
               <>
                 <dt style={{ color: "var(--slate)" }}>Expense date</dt>

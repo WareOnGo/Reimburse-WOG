@@ -40,6 +40,8 @@ function pickFiles(...files: File[]) {
 function fillRequiredFields() {
   fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Client dinner" } });
   fireEvent.change(screen.getByLabelText("Amount (₹)"), { target: { value: "1250" } });
+  fireEvent.change(screen.getByLabelText("Deal name"), { target: { value: "50,000 sqft — Bhiwandi, Mumbai" } });
+  fireEvent.change(screen.getByLabelText("Client name"), { target: { value: "Delhivery Supply Chain Pvt Ltd" } });
   fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Dinner with client" } });
 }
 
@@ -122,6 +124,8 @@ describe("TicketForm attachments", () => {
     expect(body.attachments).toEqual([ATTACHMENT]);
     expect(body.title).toBe("Client dinner");
     expect(body.amount).toBe(1250);
+    expect(body.dealName).toBe("50,000 sqft — Bhiwandi, Mumbai");
+    expect(body.clientName).toBe("Delhivery Supply Chain Pvt Ltd");
   });
 
   it("blocks submission while an attachment has failed", async () => {

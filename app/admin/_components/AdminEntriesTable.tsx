@@ -20,6 +20,8 @@ export type AdminEntry = {
   amount: number;
   approvedAmount: number | null;
   expenseDate: string | null;
+  dealName: string | null;
+  clientName: string | null;
   status: "PENDING" | "REVIEW" | "APPROVED" | "CLEARED" | "REJECTED" | "CANCELLED";
   createdAt: string;
   submitterName: string;
@@ -63,6 +65,8 @@ function toReviewTicket(e: AdminEntry): ReviewTicket {
     amount: e.amount,
     approvedAmount: e.approvedAmount,
     expenseDate: e.expenseDate,
+    dealName: e.dealName,
+    clientName: e.clientName,
     description: e.description,
     status: e.status,
     createdAt: e.createdAt,
@@ -105,7 +109,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
       if (!matchesStatus(status, e.status)) return false;
       if (employee !== "all" && e.empID !== employee) return false;
       if (q) {
-        const hay = `${e.shortCode} ${e.title} ${e.category} ${e.submitterName}`.toLowerCase();
+        const hay = `${e.shortCode} ${e.title} ${e.category} ${e.submitterName} ${e.dealName ?? ""} ${e.clientName ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -146,7 +150,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
               <input
                 type="search"
-                placeholder="Search ticket #, title, category, employee…"
+                placeholder="Search ticket #, title, category, employee, deal, client…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 style={{ flex: 1, minWidth: 220 }}
@@ -219,6 +223,11 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                     </td>
                     <td className="title-cell" style={{ maxWidth: 340 }}>
                       <div className="title">{e.title}</div>
+                      {(e.clientName || e.dealName) && (
+                        <div className="desc">
+                          {[e.clientName, e.dealName].filter(Boolean).join(" · ")}
+                        </div>
+                      )}
                       <div className="desc">
                         {e.category} · {e.description}
                       </div>

@@ -147,6 +147,12 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
                 </div>
               )}
               <div><dt>Category</dt><dd>{ticket.category}</dd></div>
+              {ticket.dealName && (
+                <div><dt>Deal name</dt><dd>{ticket.dealName}</dd></div>
+              )}
+              {ticket.clientName && (
+                <div><dt>Client name</dt><dd>{ticket.clientName}</dd></div>
+              )}
               {ticket.expenseDate && (
                 <div><dt>Expense date</dt><dd>{fmtDate(ticket.expenseDate)}</dd></div>
               )}

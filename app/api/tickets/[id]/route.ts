@@ -23,6 +23,8 @@ type PatchBody = {
   amount?: number;
   description?: string;
   expenseDate?: string | null;
+  dealName?: string;
+  clientName?: string;
   addAttachments?: AttachmentInput[];
   removeAttachmentIds?: string[];
 };
@@ -59,6 +61,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
         approvedAmount: true,
         shortCode: true,
         title: true,
+        dealName: true,
+        clientName: true,
         submittedBy: {
           select: { verifiedNumber: { select: { email: true, name: true } } },
         },
@@ -75,6 +79,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     body.amount !== undefined ||
     body.description !== undefined ||
     body.expenseDate !== undefined ||
+    body.dealName !== undefined ||
+    body.clientName !== undefined ||
     (body.addAttachments && body.addAttachments.length > 0) ||
     (body.removeAttachmentIds && body.removeAttachmentIds.length > 0);
   const editingStatus = body.status !== undefined;
@@ -107,6 +113,23 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     }
     if (body.amount !== undefined && (typeof body.amount !== "number" || !isFinite(body.amount) || body.amount < 0)) {
       return NextResponse.json({ error: "amount must be a non-negative number" }, { status: 400 });
+    }
+  }
+
+  // Deal/client name: omitted ⇒ leave unchanged. Sent blank is rejected rather than
+  // stored — an edit must not empty a field the create form requires.
+  let dealNameUpdate: string | undefined = undefined;
+  let clientNameUpdate: string | undefined = undefined;
+  if (body.dealName !== undefined) {
+    dealNameUpdate = typeof body.dealName === "string" ? body.dealName.trim() : "";
+    if (!dealNameUpdate) {
+      return NextResponse.json({ error: "deal name is required" }, { status: 400 });
+    }
+  }
+  if (body.clientName !== undefined) {
+    clientNameUpdate = typeof body.clientName === "string" ? body.clientName.trim() : "";
+    if (!clientNameUpdate) {
+      return NextResponse.json({ error: "client name is required" }, { status: 400 });
     }
   }
   if (editingStatus && !(body.status! in STATUS_LABEL)) {
@@ -203,6 +226,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
         amount: body.amount,
         description: body.description,
         expenseDate: expenseDateUpdate,
+        dealName: dealNameUpdate,
+        clientName: clientNameUpdate,
         status: editingStatus ? body.status : undefined,
         approvedAmount: approvedAmountUpdate,
         attachments: body.addAttachments?.length
@@ -251,6 +276,9 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
         title: existing.title,
         requestedAmount,
         approvedAmount: approvedAmountUpdate,
+        // Prefer values from this same request; `existing` predates the update above.
+        dealName: dealNameUpdate ?? existing.dealName,
+        clientName: clientNameUpdate ?? existing.clientName,
       });
     }
   }
