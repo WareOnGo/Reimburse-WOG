@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ticketTotals } from "@/lib/totals";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 import HistoryFilter from "@/app/_components/HistoryFilter";
@@ -25,19 +26,7 @@ export default async function DashboardHome() {
     include: { attachments: { select: { id: true } } },
   });
 
-  const pending = tickets.filter((t) => t.status === "PENDING" || t.status === "REVIEW");
-  const approved = tickets.filter((t) => t.status === "APPROVED");
-  const cleared = tickets.filter((t) => t.status === "CLEARED");
-
-  const pendingAmount = pending.reduce((s, t) => s + Number(t.amount), 0);
-  const approvedAmount = approved.reduce(
-    (s, t) => s + Number(t.approvedAmount ?? t.amount),
-    0,
-  );
-  const clearedAmount = cleared.reduce(
-    (s, t) => s + Number(t.approvedAmount ?? t.amount),
-    0,
-  );
+  const { pendingCount, pendingAmount, approvedCount, approvedAmount, clearedCount, clearedAmount } = ticketTotals(tickets);
 
   const cards: TicketCardData[] = tickets.map((t) => ({
     shortCode: t.shortCode,
@@ -65,9 +54,9 @@ export default async function DashboardHome() {
       <div className="stat-grid" style={{ marginBottom: "1.5rem" }}>
         <div className="card stat-card stat-card--pending">
           <p className="stat-label">Pending</p>
-          <div className="stat-value">{pending.length}</div>
+          <div className="stat-value">{pendingCount}</div>
           <p className="stat-sub">
-            {pending.length === 0 ? (
+            {pendingCount === 0 ? (
               "Nothing awaiting review"
             ) : (
               <>
@@ -78,9 +67,9 @@ export default async function DashboardHome() {
         </div>
         <div className="card stat-card stat-card--approved">
           <p className="stat-label">Approved</p>
-          <div className="stat-value">{approved.length}</div>
+          <div className="stat-value">{approvedCount}</div>
           <p className="stat-sub">
-            {approved.length === 0 ? (
+            {approvedCount === 0 ? (
               "No approvals yet"
             ) : (
               <>
@@ -91,9 +80,9 @@ export default async function DashboardHome() {
         </div>
         <div className="card stat-card stat-card--cleared">
           <p className="stat-label">Cleared</p>
-          <div className="stat-value">{cleared.length}</div>
+          <div className="stat-value">{clearedCount}</div>
           <p className="stat-sub">
-            {cleared.length === 0 ? (
+            {clearedCount === 0 ? (
               "Nothing reimbursed yet"
             ) : (
               <>

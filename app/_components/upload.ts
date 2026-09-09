@@ -9,8 +9,6 @@ export type UploadedAttachment = {
   r2Key: string;
 };
 
-type SignResponse = { url: string; key: string };
-
 // Android browsers and some webviews report an empty or generic file.type,
 // so fall back to the extension before trusting it.
 const MIME_BY_EXT: Record<string, string> = {
@@ -44,6 +42,7 @@ class UploadHttpError extends Error {
 }
 
 function isRetryable(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return false;
   if (err instanceof UploadHttpError) {
     return err.status >= 500 || err.status === 408 || err.status === 429;
   }
@@ -101,9 +100,12 @@ async function prepareForUpload(file: File): Promise<PreparedUpload> {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return original;
-    ctx.drawImage(decoded.src, 0, 0, w, h);
-    decoded.close?.();
+    try {
+      if (!ctx) return original;
+      ctx.drawImage(decoded.src, 0, 0, w, h);
+    } finally {
+      decoded.close?.();
+    }
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, "image/jpeg", COMPRESS_QUALITY),
     );
@@ -139,7 +141,7 @@ function putWithProgress(
     });
     xhr.addEventListener("error", () => reject(new Error("network error during upload")));
     xhr.addEventListener("timeout", () => reject(new Error("upload timed out")));
-    xhr.addEventListener("abort", () => reject(new Error("upload cancelled")));
+    xhr.addEventListener("abort", () => reject(new DOMException("upload cancelled", "AbortError")));
     xhr.open("PUT", url);
     xhr.setRequestHeader("content-type", contentType);
     xhr.send(body);
@@ -179,7 +181,13 @@ export async function uploadToR2(
         const data = await signRes.json().catch(() => ({}));
         throw new UploadHttpError(signRes.status, data.error ?? "could not get upload URL");
       }
-      const { url, key } = (await signRes.json()) as SignResponse;
+      const signed: unknown = await signRes.json();
+      if (!signed || typeof signed !== "object" || !("url" in signed) || !("key" in signed)
+        || typeof signed.url !== "string" || typeof signed.key !== "string" || !signed.key.trim()
+        || !["http:", "https:"].includes(new URL(signed.url).protocol)) {
+        throw new Error("invalid upload URL response");
+      }
+      const { url, key } = signed;
 
       onProgress(0);
       await putWithProgress(url, prepared.body, prepared.contentType, onProgress);
@@ -196,5 +204,5 @@ export async function uploadToR2(
       if (!isRetryable(err)) break;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error("upload failed");
+  throw lastErr instanceof Error || lastErr instanceof DOMException ? lastErr : new Error("upload failed");
 }

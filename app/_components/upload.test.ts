@@ -4,10 +4,11 @@ import { resolveMime, uploadToR2 } from "./upload";
 // ── Test doubles ─────────────────────────────────────────────────────────────
 
 type XhrBehavior =
-  | { type: "success" }
+  | { type: "success"; lengthComputable?: boolean }
   | { type: "status"; status: number }
   | { type: "error" }
-  | { type: "timeout" };
+  | { type: "timeout" }
+  | { type: "abort" };
 
 class FakeXHR {
   static behaviors: XhrBehavior[] = [];
@@ -48,13 +49,14 @@ class FakeXHR {
   send(body: unknown) {
     this.sentBody = body;
     FakeXHR.instances.push(this);
-    const behavior = FakeXHR.behaviors.shift() ?? { type: "success" as const };
+    const behavior = FakeXHR.behaviors.shift();
+    if (!behavior) throw new Error("Unexpected extra XHR send");
     queueMicrotask(() => {
       switch (behavior.type) {
         case "success":
           this.status = 200;
-          this.progressCb?.({ lengthComputable: true, loaded: 50, total: 100 });
-          this.progressCb?.({ lengthComputable: true, loaded: 100, total: 100 });
+          this.progressCb?.({ lengthComputable: behavior.lengthComputable ?? true, loaded: 50, total: 100 });
+          this.progressCb?.({ lengthComputable: behavior.lengthComputable ?? true, loaded: 100, total: 100 });
           this.listeners["load"]?.();
           break;
         case "status":
@@ -64,6 +66,9 @@ class FakeXHR {
         case "error":
           this.listeners["error"]?.();
           break;
+        case "abort":
+          this.listeners["abort"]?.();
+          break;
         case "timeout":
           this.listeners["timeout"]?.();
           break;
@@ -72,7 +77,7 @@ class FakeXHR {
   }
 
   static reset() {
-    FakeXHR.behaviors = [];
+    FakeXHR.behaviors = [{ type: "success" }];
     FakeXHR.instances = [];
   }
 }
@@ -80,16 +85,13 @@ class FakeXHR {
 const SIGN_RESPONSE = { url: "https://r2.test/put-here", key: "tickets/draft/uuid-receipt.jpg" };
 
 function mockSignEndpoint() {
-  return vi.fn(async () => ({
-    ok: true,
-    json: async () => ({ ...SIGN_RESPONSE }),
-  }));
+  return vi.fn<typeof fetch>(async () => Response.json(SIGN_RESPONSE));
 }
 
 let fetchMock: ReturnType<typeof mockSignEndpoint>;
 
 function signRequestBody(callIndex = 0) {
-  const init = fetchMock.mock.calls[callIndex][1 as never] as RequestInit;
+  const init = fetchMock.mock.calls[callIndex][1] as RequestInit;
   return JSON.parse(init.body as string);
 }
 
@@ -134,6 +136,54 @@ describe("resolveMime", () => {
 // ── uploadToR2: transport & retry ────────────────────────────────────────────
 
 describe("uploadToR2", () => {
+  it("does not retry an aborted upload", async () => {
+    FakeXHR.behaviors = [{ type: "abort" }];
+    await expect(uploadToR2(pdfFile(), "draft", () => {})).rejects.toThrow("upload cancelled");
+    expect(fetchMock).toHaveBeenCalledOnce(); expect(FakeXHR.instances).toHaveLength(1);
+  });
+  it.each([null, {}, { url: 10, key: "key" }, { url: "https://r2.test/put", key: "" }, { url: "javascript:alert(1)", key: "key" }])("rejects malformed successful signing data %j before PUT", async (payload) => {
+    vi.useFakeTimers(); fetchMock.mockImplementation(async () => Response.json(payload));
+    const result = expect(uploadToR2(pdfFile(), "draft", () => {})).rejects.toThrow("invalid upload URL response");
+    await vi.runAllTimersAsync(); await result;
+    expect(fetchMock).toHaveBeenCalledTimes(3); expect(FakeXHR.instances).toHaveLength(0);
+  });
+  it("spaces retries at 1 and 3 seconds and uses each fresh signature", async () => {
+    vi.useFakeTimers();
+    FakeXHR.behaviors = [{ type: "error" }, { type: "timeout" }, { type: "success" }];
+    for (let i = 1; i <= 3; i++) fetchMock.mockResolvedValueOnce(Response.json({ url: `https://r2.test/attempt-${i}`, key: `key-${i}` }));
+    const progress = vi.fn(); const result = uploadToR2(pdfFile(), "draft", progress);
+    await vi.advanceTimersByTimeAsync(0); expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(999); expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2999); expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1); expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect((await result).r2Key).toBe("key-3");
+    expect(FakeXHR.instances.map((xhr) => xhr.url)).toEqual(["https://r2.test/attempt-1", "https://r2.test/attempt-2", "https://r2.test/attempt-3"]);
+    expect(progress.mock.calls.map(([pct]) => pct)).toEqual([0, 0, 0, 50, 100]);
+  });
+  it.each([408, 429, 500, 503])("retries transient HTTP %s from storage", async (status) => {
+    vi.useFakeTimers(); FakeXHR.behaviors = [{ type: "status", status }, { type: "success" }];
+    const result = uploadToR2(pdfFile(), "draft", () => {}); await vi.runAllTimersAsync(); await result;
+    expect(FakeXHR.instances).toHaveLength(2);
+  });
+  it.each([400, 401, 403, 404])("fails immediately on storage HTTP %s", async (status) => {
+    FakeXHR.behaviors = [{ type: "status", status }];
+    await expect(uploadToR2(pdfFile(), "draft", () => {})).rejects.toThrow(`upload failed (${status})`); expect(FakeXHR.instances).toHaveLength(1);
+  });
+  it.each([408, 429, 503])("retries a transient signing response %s", async (status) => {
+    vi.useFakeTimers(); fetchMock.mockResolvedValueOnce(new Response("not JSON", { status }));
+    const result = uploadToR2(pdfFile(), "draft", () => {}); await vi.runAllTimersAsync(); await result;
+    expect(fetchMock).toHaveBeenCalledTimes(2); expect(FakeXHR.instances).toHaveLength(1);
+  });
+  it("retries a rejected signing request", async () => {
+    vi.useFakeTimers(); fetchMock.mockRejectedValueOnce(new Error("offline"));
+    const result = uploadToR2(pdfFile(), "draft", () => {}); await vi.runAllTimersAsync(); await result; expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("accepts 204 and ignores progress without a computable total", async () => {
+    FakeXHR.behaviors = [{ type: "status", status: 204 }, { type: "success", lengthComputable: false }];
+    await expect(uploadToR2(pdfFile(), "draft", () => {})).resolves.toMatchObject({ kind: "DOCUMENT" });
+    const progress = vi.fn(); await uploadToR2(pdfFile(), "draft", progress); expect(progress.mock.calls).toEqual([[0]]);
+  });
   it("signs then PUTs and returns attachment metadata", async () => {
     const onProgress = vi.fn();
     const result = await uploadToR2(pdfFile(), "draft", onProgress);
@@ -160,7 +210,9 @@ describe("uploadToR2", () => {
       sizeBytes: pdfFile().size,
       r2Key: SIGN_RESPONSE.key,
     });
-    expect(onProgress).toHaveBeenCalledWith(100);
+    expect(onProgress.mock.calls.map(([pct]) => pct)).toEqual([0, 50, 100]);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/r2/sign");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST", headers: { "content-type": "application/json" } });
   });
 
   it("retries a network error and re-signs on the second attempt", async () => {
@@ -188,7 +240,7 @@ describe("uploadToR2", () => {
     expect(FakeXHR.instances).toHaveLength(3);
   });
 
-  it("does not retry a 4xx from R2", async () => {
+  it("does not retry a 403 from R2", async () => {
     FakeXHR.behaviors = [{ type: "status", status: 403 }];
 
     await expect(uploadToR2(pdfFile(), "draft", () => {})).rejects.toThrow("upload failed (403)");
@@ -196,7 +248,7 @@ describe("uploadToR2", () => {
     expect(FakeXHR.instances).toHaveLength(1);
   });
 
-  it("does not retry a 4xx from the sign endpoint", async () => {
+  it("does not retry a 401 from the sign endpoint", async () => {
     fetchMock.mockResolvedValue({
       ok: false,
       status: 401,
@@ -221,11 +273,12 @@ describe("uploadToR2 image compression", () => {
   const realCreateElement = document.createElement.bind(document);
 
   function stubCanvas(outputBlob: Blob | null) {
+    const context = { drawImage: vi.fn() };
     const canvas = {
       width: 0,
       height: 0,
-      getContext: () => ({ drawImage: vi.fn() }),
-      toBlob: (cb: (b: Blob | null) => void) => cb(outputBlob),
+      getContext: vi.fn(() => context),
+      toBlob: vi.fn((cb: (b: Blob | null) => void) => cb(outputBlob)),
     };
     vi.spyOn(document, "createElement").mockImplementation((tag: string) =>
       tag === "canvas" ? (canvas as unknown as HTMLElement) : realCreateElement(tag),
@@ -250,6 +303,8 @@ describe("uploadToR2 image compression", () => {
     // 4000×3000 scaled so the long edge is 1800
     expect(canvas.width).toBe(1800);
     expect(canvas.height).toBe(1350);
+    expect(canvas.getContext().drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1800, 1350);
+    expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/jpeg", 0.82);
     expect(result.name).toBe("photo.jpg");
     expect(result.contentType).toBe("image/jpeg");
     expect(result.kind).toBe("IMAGE");
@@ -304,11 +359,9 @@ describe("uploadToR2 image compression", () => {
         throw new Error("unsupported format");
       }),
     );
-    vi.stubGlobal("URL", {
-      createObjectURL: () => {
-        throw new Error("unsupported format");
-      },
-      revokeObjectURL: () => {},
+    vi.stubGlobal("URL", class extends URL {
+      static createObjectURL(): string { throw new Error("unsupported format"); }
+      static revokeObjectURL() {}
     });
 
     const file = bigImageFile(400 * 1024, "receipt.heic", "image/heic");
@@ -319,4 +372,40 @@ describe("uploadToR2 image compression", () => {
     expect(result.kind).toBe("IMAGE");
     expect(FakeXHR.instances[0].sentBody).toBe(file);
   });
+  it.each([null, new Blob([new Uint8Array(400 * 1024)])])("keeps the original for null/equal-size encoding", async (blob) => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })));
+    const canvas = stubCanvas(blob);
+    const file = bigImageFile();
+    await uploadToR2(file, "draft", () => {});
+    expect(canvas.width).toBe(800); expect(canvas.height).toBe(600);
+    expect(FakeXHR.instances[0].sentBody).toBe(file);
+  });
+  it("skips large GIFs to preserve animation", async () => {
+    const decode = vi.fn(); vi.stubGlobal("createImageBitmap", decode);
+    const file = bigImageFile(400 * 1024, "animated.gif", "image/gif");
+    await uploadToR2(file, "draft", () => {});
+    expect(decode).not.toHaveBeenCalled(); expect(FakeXHR.instances[0].sentBody).toBe(file);
+  });
+  it("compresses at the exact threshold, scales portrait images, and closes bitmaps", async () => {
+    const close = vi.fn(); vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 2000, height: 4000, close })));
+    const canvas = stubCanvas(new Blob(["jpeg"], { type: "image/jpeg" }));
+    await uploadToR2(bigImageFile(300 * 1024), "draft", () => {});
+    expect(canvas.width).toBe(900); expect(canvas.height).toBe(1800); expect(close).toHaveBeenCalledOnce();
+  });
+  it("releases a decoded bitmap if canvas has no context", async () => {
+    const close = vi.fn(); vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 4000, height: 3000, close })));
+    const canvas = stubCanvas(null); canvas.getContext.mockReturnValue(null as never);
+    const file = bigImageFile(); await uploadToR2(file, "draft", () => {});
+    expect(close).toHaveBeenCalledOnce(); expect(FakeXHR.instances[0].sentBody).toBe(file);
+  });
+  it.each([false, true])("uses Image.decode fallback and revokes its URL (failure=%s)", async (failure) => {
+    vi.stubGlobal("createImageBitmap", undefined);
+    const revoke = vi.fn(); vi.stubGlobal("URL", class extends URL { static createObjectURL() { return "blob:receipt"; } static revokeObjectURL = revoke; });
+    vi.stubGlobal("Image", class { src = ""; naturalWidth = 4000; naturalHeight = 3000; async decode() { if (failure) throw new Error("unsupported"); } });
+    stubCanvas(new Blob(["jpeg"], { type: "image/jpeg" }));
+    const file = bigImageFile(); const result = await uploadToR2(file, "draft", () => {});
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:receipt"); expect(result.name).toBe(failure ? "photo.png" : "photo.jpg");
+    if (failure) expect(FakeXHR.instances[0].sentBody).toBe(file);
+  });
+
 });

@@ -18,7 +18,7 @@ function client(): S3Client {
   if (_client) return _client;
   _client = new S3Client({
     region: "auto",
-    endpoint: `https://${required("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
+    endpoint: process.env.R2_ENDPOINT || `https://${required("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId: required("R2_ACCESS_KEY_ID"),
       secretAccessKey: required("R2_SECRET_ACCESS_KEY"),
@@ -74,6 +74,10 @@ export async function getDownloadUrl(
 
 export async function deleteObject(key: string): Promise<void> {
   await client().send(new DeleteObjectCommand({ Bucket: required("R2_BUCKET"), Key: key }));
+}
+
+export async function getObjectMetadata(key: string) {
+  return client().send(new HeadObjectCommand({ Bucket: required("R2_BUCKET"), Key: key }));
 }
 
 export async function objectExists(key: string): Promise<boolean> {

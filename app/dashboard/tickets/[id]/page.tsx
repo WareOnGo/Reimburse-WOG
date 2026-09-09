@@ -221,9 +221,9 @@ export default async function TicketDetailPage({ params }: { params: Promise<{ i
           </div>
           {!canModify && (
             <div className="card" style={{ marginTop: "1rem" }}>
-              <h3>Why can't I edit this?</h3>
+              <h3>Why can&apos;t I edit this?</h3>
               <p style={{ margin: 0, color: "var(--slate)" }}>
-                Tickets can only be edited or cancelled while they're <strong>pending</strong> or <strong>under review</strong>.
+                Tickets can only be edited or cancelled while they&apos;re <strong>pending</strong> or <strong>under review</strong>.
                 This ticket is now <strong>{status}</strong>.
               </p>
             </div>

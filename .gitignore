@@ -6,6 +6,9 @@ out
 .DS_Store
 *.log
 *.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
 
 # Prisma
 prisma/migrations/dev.db*

@@ -1,3 +1,4 @@
+import { employeeTotals } from "@/lib/totals";
 import { prisma } from "@/lib/prisma";
 import { getDownloadUrl } from "@/lib/r2";
 import AdminEntriesTable, { AdminEntry } from "./_components/AdminEntriesTable";
@@ -54,6 +55,7 @@ export default async function AdminPage() {
   };
 
   const byUser = new Map<string, Row>();
+  const totals = employeeTotals(tickets);
   const entries: AdminEntry[] = [];
 
   for (const t of tickets) {
@@ -68,39 +70,9 @@ export default async function AdminPage() {
         empID: u.empID,
         name: submitterName,
         email,
-        pendingCount: 0,
-        pendingAmount: 0,
-        approvedCount: 0,
-        approvedAmount: 0,
-        clearedCount: 0,
-        clearedAmount: 0,
-        rejectedCount: 0,
-        rejectedAmount: 0,
+        ...totals.get(u.empID)!,
       });
     }
-    const row = byUser.get(u.empID)!;
-    if (t.status === "PENDING" || t.status === "REVIEW") {
-      row.pendingCount += 1;
-      row.pendingAmount += amount;
-    } else if (t.status === "APPROVED" || t.status === "CLEARED") {
-      // approvedAmount holds the (possibly partial) sanctioned amount; null = full.
-      const sanctioned = t.approvedAmount != null ? Number(t.approvedAmount) : amount;
-      if (t.status === "APPROVED") {
-        row.approvedCount += 1;
-        row.approvedAmount += sanctioned;
-      } else {
-        row.clearedCount += 1;
-        row.clearedAmount += sanctioned;
-      }
-      // The unapproved portion of a partial approval counts as rejected money.
-      if (t.approvedAmount != null && sanctioned < amount) {
-        row.rejectedAmount += amount - sanctioned;
-      }
-    } else if (t.status === "REJECTED") {
-      row.rejectedCount += 1;
-      row.rejectedAmount += amount;
-    }
-
     const attachmentsWithUrls = await Promise.all(
       t.attachments.map(async (a) => ({
         id: a.id,
@@ -141,7 +113,7 @@ export default async function AdminPage() {
         <div>
           <h1>Admin · Reimbursement review</h1>
           <div className="sub">
-            Review pending submissions and act on them. Approvals are final.
+            Review pending submissions and act on them. Review status and approved amounts before making changes.
           </div>
         </div>
       </div>

@@ -95,6 +95,16 @@ model Employee {
   tickets        Ticket[]       @relation("EmployeeTickets")
 }
 
+// Opaque portal sessions. Only a SHA-256 token hash is stored; the browser holds
+// the random token. This table is separate from other applications' sessions.
+model ReimbursementSession {
+  tokenHash String   @id
+  email     String
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
 model Ticket {
   id               String        @id @default(cuid())
   shortCode        String        @unique

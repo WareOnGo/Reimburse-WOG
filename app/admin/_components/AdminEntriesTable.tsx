@@ -215,7 +215,9 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                     title="Click to review"
                   >
                     <td style={{ fontFamily: "var(--font-mono, ui-monospace)", fontSize: "0.82rem" }}>
-                      {e.shortCode}
+                      <button type="button" className="btn btn-ghost" style={{ padding: 0, font: "inherit" }} aria-label={`Review ticket ${e.shortCode}`} onClick={() => setSelected(e)}>
+                        {e.shortCode}
+                      </button>
                     </td>
                     <td>
                       <div>{e.submitterName}</div>

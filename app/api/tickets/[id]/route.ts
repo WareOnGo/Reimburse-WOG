@@ -1,33 +1,14 @@
 import { NextResponse } from "next/server";
+import { Prisma, TicketStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { TicketStatus } from "@prisma/client";
 import { getCurrentUser } from "@/lib/auth";
 import { deleteObject } from "@/lib/r2";
 import { sendPartialApprovalEmail } from "@/lib/email";
+import { InputError } from "@/lib/validation";
+import { approvalAmount, parseTicketPatch } from "@/lib/tickets";
+import { verifyAttachments } from "@/lib/attachment-access";
 
 export const runtime = "nodejs";
-
-type AttachmentInput = {
-  name: string;
-  kind: "IMAGE" | "DOCUMENT";
-  contentType: string;
-  sizeBytes: number;
-  r2Key: string;
-};
-
-type PatchBody = {
-  status?: TicketStatus;
-  approvedAmount?: number | null;
-  title?: string;
-  category?: string;
-  amount?: number;
-  description?: string;
-  expenseDate?: string | null;
-  dealName?: string;
-  clientName?: string;
-  addAttachments?: AttachmentInput[];
-  removeAttachmentIds?: string[];
-};
 
 const STATUS_LABEL: Record<TicketStatus, string> = {
   APPROVED: "Approved by Finance",
@@ -39,249 +20,83 @@ const STATUS_LABEL: Record<TicketStatus, string> = {
 };
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params;
-
-  let body: PatchBody;
-  try {
-    body = (await req.json()) as PatchBody;
-  } catch {
-    return NextResponse.json({ error: "invalid json" }, { status: 400 });
-  }
-
-  // Parallel: auth + ticket lookup. Cuts one round-trip.
-  const [user, existing] = await Promise.all([
-    getCurrentUser(),
-    prisma.ticket.findFirst({
-      where: { OR: [{ id }, { shortCode: id }] },
-      select: {
-        id: true,
-        status: true,
-        submittedByEmpID: true,
-        amount: true,
-        approvedAmount: true,
-        shortCode: true,
-        title: true,
-        dealName: true,
-        clientName: true,
-        submittedBy: {
-          select: { verifiedNumber: { select: { email: true, name: true } } },
-        },
-      },
-    }),
-  ]);
+  const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
-
-  const isOwner = existing.submittedByEmpID === user.empID;
-  const editingFields =
-    body.title !== undefined ||
-    body.category !== undefined ||
-    body.amount !== undefined ||
-    body.description !== undefined ||
-    body.expenseDate !== undefined ||
-    body.dealName !== undefined ||
-    body.clientName !== undefined ||
-    (body.addAttachments && body.addAttachments.length > 0) ||
-    (body.removeAttachmentIds && body.removeAttachmentIds.length > 0);
-  const editingStatus = body.status !== undefined;
-
-  if (editingFields && !isOwner) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
-  if (editingStatus) {
-    const wantCancel = body.status === "CANCELLED";
-    if (wantCancel && !isOwner && !user.isAdmin) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
-    if (!wantCancel && !user.isAdmin) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
-    if (wantCancel && existing.status !== "PENDING" && existing.status !== "REVIEW") {
-      return NextResponse.json(
-        { error: `cannot cancel ticket in ${existing.status} state` },
-        { status: 409 },
-      );
-    }
-  }
-
-  if (editingFields) {
-    if (existing.status !== "PENDING" && existing.status !== "REVIEW") {
-      return NextResponse.json(
-        { error: `cannot edit ticket in ${existing.status} state` },
-        { status: 409 },
-      );
-    }
-    if (body.amount !== undefined && (typeof body.amount !== "number" || !isFinite(body.amount) || body.amount < 0)) {
-      return NextResponse.json({ error: "amount must be a non-negative number" }, { status: 400 });
-    }
-  }
-
-  // Deal/client name: omitted ⇒ leave unchanged. Sent blank is rejected rather than
-  // stored — an edit must not empty a field the create form requires.
-  let dealNameUpdate: string | undefined = undefined;
-  let clientNameUpdate: string | undefined = undefined;
-  if (body.dealName !== undefined) {
-    dealNameUpdate = typeof body.dealName === "string" ? body.dealName.trim() : "";
-    if (!dealNameUpdate) {
-      return NextResponse.json({ error: "deal name is required" }, { status: 400 });
-    }
-  }
-  if (body.clientName !== undefined) {
-    clientNameUpdate = typeof body.clientName === "string" ? body.clientName.trim() : "";
-    if (!clientNameUpdate) {
-      return NextResponse.json({ error: "client name is required" }, { status: 400 });
-    }
-  }
-  if (editingStatus && !(body.status! in STATUS_LABEL)) {
-    return NextResponse.json({ error: "invalid status" }, { status: 400 });
-  }
-
-  // Expense occurrence date: optional. Omitted ⇒ leave unchanged; null/"" ⇒ clear it.
-  let expenseDateUpdate: Date | null | undefined = undefined;
-  if (body.expenseDate !== undefined) {
-    if (body.expenseDate === null || body.expenseDate === "") {
-      expenseDateUpdate = null;
-    } else {
-      const d = new Date(body.expenseDate);
-      if (isNaN(d.getTime())) {
-        return NextResponse.json({ error: "invalid expense date" }, { status: 400 });
-      }
-      expenseDateUpdate = d;
-    }
-  }
-
-  // Approved amount: only meaningful when approving. A null/omitted value means a full
-  // approval (and clears any prior partial); a number is a partial approval and must be
-  // within (0, requested amount]. Admin-only is already enforced above (non-cancel ⇒ admin).
-  const requestedAmount = Number(existing.amount);
-  let approvedAmountUpdate: number | null | undefined = undefined;
-  if (editingStatus && body.status === "APPROVED") {
-    if (existing.status === "CLEARED" && body.approvedAmount === undefined) {
-      // Reverting a cleared ticket back to approved is a pure status change — preserve the
-      // previously sanctioned (possibly partial) amount rather than collapsing it to full.
-      // Leaving approvedAmountUpdate undefined makes Prisma skip the column. To change the
-      // sanctioned amount during a revert, pass approvedAmount explicitly.
-      approvedAmountUpdate = undefined;
-    } else if (body.approvedAmount === undefined || body.approvedAmount === null) {
-      approvedAmountUpdate = null;
-    } else {
-      if (
-        typeof body.approvedAmount !== "number" ||
-        !isFinite(body.approvedAmount) ||
-        body.approvedAmount <= 0 ||
-        body.approvedAmount > requestedAmount
-      ) {
-        return NextResponse.json(
-          { error: `approved amount must be greater than 0 and at most ${requestedAmount}` },
-          { status: 400 },
-        );
-      }
-      // An approved amount equal to the request is just a full approval.
-      approvedAmountUpdate = body.approvedAmount < requestedAmount ? body.approvedAmount : null;
-    }
-  }
-
-  // Build event labels for the audit timeline (created after the main update, fire-and-forget)
-  const eventLabels: string[] = [];
-  if (editingStatus) {
-    if (approvedAmountUpdate != null) {
-      eventLabels.push(
-        `Partially approved by Finance (₹${approvedAmountUpdate.toLocaleString("en-IN")} of ₹${requestedAmount.toLocaleString("en-IN")})`,
-      );
-    } else {
-      eventLabels.push(STATUS_LABEL[body.status as TicketStatus]);
-    }
-  }
-  if (editingFields && !editingStatus) eventLabels.push("Ticket edited");
-
-  // For removed attachments: collect the R2 keys in parallel with the update
-  let removedR2Keys: string[] = [];
-  const attachmentCleanup =
-    body.removeAttachmentIds?.length
-      ? prisma.attachment
-          .findMany({
-            where: {
-              id: { in: body.removeAttachmentIds },
-              ticketId: existing.id,
-            },
-            select: { id: true, r2Key: true },
-          })
-          .then(async (rows) => {
-            removedR2Keys = rows.map((r) => r.r2Key);
-            if (rows.length === 0) return;
-            await prisma.attachment.deleteMany({
-              where: { id: { in: rows.map((r) => r.id) } },
-            });
-          })
-      : Promise.resolve();
-
-  // Single UPDATE (no nested writes → no implicit transaction, no extra SELECT).
-  // Use updateMany so we can return just `{ count }` and rely on the prior findFirst for routing.
-  await Promise.all([
-    prisma.ticket.update({
-      where: { id: existing.id },
-      data: {
-        title: body.title,
-        category: body.category,
-        amount: body.amount,
-        description: body.description,
-        expenseDate: expenseDateUpdate,
-        dealName: dealNameUpdate,
-        clientName: clientNameUpdate,
-        status: editingStatus ? body.status : undefined,
-        approvedAmount: approvedAmountUpdate,
-        attachments: body.addAttachments?.length
-          ? { create: body.addAttachments }
-          : undefined,
+  const { id } = await ctx.params;
+  let json: unknown;
+  try { json = await req.json(); }
+  catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
+  try {
+    const body = parseTicketPatch(json);
+    const existing = await prisma.ticket.findFirst({
+      where: { OR: [{ id }, { shortCode: id }] },
+      select: { id: true, status: true, updatedAt: true, submittedByEmpID: true,
+        amount: true, approvedAmount: true, shortCode: true, title: true, dealName: true, clientName: true,
+        submittedBy: { select: { verifiedNumber: { select: { email: true, name: true } } } },
       },
-      select: { id: true },
-    }),
-    attachmentCleanup,
-  ]);
-
-  // Audit events: fire-and-forget. Don't block the response on this.
-  if (eventLabels.length > 0) {
-    prisma.ticketEvent
-      .createMany({
-        data: eventLabels.map((label) => ({ ticketId: existing.id, label })),
-      })
-      .catch(() => {
-        // best-effort
-      });
-  }
-
-  // R2 cleanup is already best-effort
-  for (const key of removedR2Keys) {
-    deleteObject(key).catch(() => {
-      // best-effort
     });
-  }
+    if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
+    const isOwner = existing.submittedByEmpID === user.empID;
+    const editable = existing.status === "PENDING" || existing.status === "REVIEW";
+    if (body.editingFields && !isOwner) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    if (body.status !== undefined) {
+      if (body.status === "CANCELLED") {
+        if (!isOwner && !user.isAdmin) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+        if (!editable) return NextResponse.json({ error: `cannot cancel ticket in ${existing.status} state` }, { status: 409 });
+      } else if (!user.isAdmin) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    }
+    if (body.editingFields && !editable) return NextResponse.json({ error: `cannot edit ticket in ${existing.status} state` }, { status: 409 });
+    const requestedAmount = body.amount ?? Number(existing.amount);
+    const approvedAmount = body.status === undefined ? undefined
+      : approvalAmount(body.status, existing.status, requestedAmount, body.approvedAmount);
+    await verifyAttachments(body.addAttachments, user.empID);
 
-  // Notify the employee when a *new* partial approval is recorded. Debounce by content:
-  // only send when the sanctioned amount actually changes vs what was already stored, so
-  // re-confirming the same partial (double-click / re-open + confirm) won't resend.
-  // `approvedAmountUpdate` is non-null only for a genuine partial (a number < requested).
-  // Awaited (not fire-and-forget) so the send completes before the serverless fn returns;
-  // sendPartialApprovalEmail never throws, so a mail failure can't break the response.
-  if (
-    approvedAmountUpdate != null &&
-    Number(existing.approvedAmount ?? -1) !== approvedAmountUpdate
-  ) {
-    const vn = existing.submittedBy?.verifiedNumber;
-    if (vn?.email) {
-      await sendPartialApprovalEmail({
-        to: vn.email,
-        name: vn.name ?? "there",
-        shortCode: existing.shortCode,
-        title: existing.title,
-        requestedAmount,
-        approvedAmount: approvedAmountUpdate,
-        // Prefer values from this same request; `existing` predates the update above.
-        dealName: dealNameUpdate ?? existing.dealName,
-        clientName: clientNameUpdate ?? existing.clientName,
+    // Conditional update detects another writer since our read. Attachment rows
+    // are removed only within this transaction, after acquiring the ticket lock.
+    const removed = await prisma.$transaction(async (tx) => {
+      await tx.ticket.update({
+        where: { id: existing.id, updatedAt: existing.updatedAt, status: existing.status },
+        data: { title: body.title, category: body.category, amount: body.amount,
+          // Always advance the version, even for writes within one millisecond
+          // or after a server clock correction.
+          updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)),
+          description: body.description, expenseDate: body.expenseDate, dealName: body.dealName, clientName: body.clientName,
+          status: body.status, approvedAmount,
+          attachments: body.addAttachments.length ? { create: body.addAttachments } : undefined,
+        },
+        select: { id: true },
+      });
+      if (!body.removeAttachmentIds.length) return [];
+      const rows = await tx.attachment.findMany({
+        where: { id: { in: body.removeAttachmentIds }, ticketId: existing.id }, select: { id: true, r2Key: true },
+      });
+      if (rows.length) await tx.attachment.deleteMany({ where: { id: { in: rows.map((a) => a.id) }, ticketId: existing.id } });
+      return rows;
+    });
+
+    const labels: string[] = [];
+    if (body.status !== undefined) labels.push(approvedAmount != null
+      ? `Partially approved by Finance (₹${approvedAmount.toLocaleString("en-IN")} of ₹${requestedAmount.toLocaleString("en-IN")})`
+      : STATUS_LABEL[body.status]);
+    if (body.editingFields && body.status === undefined) labels.push("Ticket edited");
+    await Promise.all([
+      labels.length ? prisma.ticketEvent.createMany({ data: labels.map((label) => ({ ticketId: existing.id, label })) }).catch(() => {}) : Promise.resolve(),
+      ...removed.map((a) => deleteObject(a.r2Key).catch(() => {})),
+    ]);
+    if (approvedAmount != null && Number(existing.approvedAmount ?? -1) !== approvedAmount) {
+      const vn = existing.submittedBy.verifiedNumber;
+      if (vn?.email) await sendPartialApprovalEmail({
+        to: vn.email, name: vn.name ?? "there", shortCode: existing.shortCode,
+        title: body.title ?? existing.title, requestedAmount, approvedAmount,
+        dealName: body.dealName ?? existing.dealName, clientName: body.clientName ?? existing.clientName,
       });
     }
+    return NextResponse.json({ ok: true, id: existing.id });
+  } catch (error) {
+    if (error instanceof InputError) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+      return NextResponse.json({ error: "ticket changed; refresh and try again" }, { status: 409 });
+    }
+    throw error;
   }
-
-  return NextResponse.json({ ok: true, id: existing.id });
 }

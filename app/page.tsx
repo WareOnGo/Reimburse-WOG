@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 export const dynamic = "force-dynamic";
 
 const ERROR_MESSAGES: Record<string, string> = {
+  oauth_failed: "Could not complete sign-in. Please try again.",
   oauth_not_configured: "Google sign-in isn't configured yet.",
   missing_code: "Google sign-in was cancelled.",
   invalid_state: "Sign-in session expired. Please try again.",
@@ -68,7 +69,7 @@ export default async function LoginPage({
         </a>
 
         <p className="auth-hint">
-          Only employees registered in the portal can sign in. If your account isn't recognised, contact an admin.
+          Only employees registered in the portal can sign in. If your account isn&apos;t recognised, contact an admin.
         </p>
       </div>
     </main>

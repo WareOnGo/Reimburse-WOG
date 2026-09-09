@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDialogFocus } from "./useDialogFocus";
 
 type Props = {
   open: boolean;
@@ -31,7 +32,11 @@ export default function ConfirmDialog({
   onClose,
 }: Props) {
   const [mounted, setMounted] = useState(false);
+  const titleId = useId();
+  const focusRef = useDialogFocus(mounted && open);
 
+  // The portal target is available after hydration, never during server render.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
@@ -49,6 +54,9 @@ export default function ConfirmDialog({
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby={titleId}
+      ref={focusRef}
+      tabIndex={-1}
       style={{
         position: "fixed",
         inset: 0,
@@ -73,7 +81,7 @@ export default function ConfirmDialog({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
+        <h2 id={titleId} style={{ marginTop: 0 }}>{title}</h2>
         <div style={{ color: "var(--charcoal)", marginBottom: "1rem" }}>{body}</div>
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
           <button

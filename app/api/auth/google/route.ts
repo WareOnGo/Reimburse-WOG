@@ -18,6 +18,7 @@ export async function GET(req: Request) {
   const c = await cookies();
   c.set(STATE_COOKIE, state, {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 600,

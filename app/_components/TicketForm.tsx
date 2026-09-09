@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { uploadToR2, type UploadedAttachment } from "./upload";
 
@@ -50,6 +50,8 @@ function newItemId() {
 
 export default function TicketForm({ mode = "create", ticketId, initial }: Props) {
   const router = useRouter();
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (redirectTimer.current) clearTimeout(redirectTimer.current); }, []);
   const [title, setTitle] = useState(initial?.title ?? "");
   const [category, setCategory] = useState(initial?.category ?? CATEGORIES[0]);
   const [amount, setAmount] = useState(initial?.amount ?? "");
@@ -203,7 +205,7 @@ export default function TicketForm({ mode = "create", ticketId, initial }: Props
       }
 
       setSubmitted(true);
-      setTimeout(() => {
+      redirectTimer.current = setTimeout(() => {
         if (isEdit && ticketId) {
           router.push(`/dashboard/tickets/${ticketId}`);
         } else {

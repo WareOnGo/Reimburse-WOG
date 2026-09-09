@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import AttachmentLink from "@/app/_components/AttachmentLink";
+import { useDialogFocus } from "@/app/_components/useDialogFocus";
 
 type AttachmentLite = {
   id: string;
@@ -67,7 +68,10 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
   const [mounted, setMounted] = useState(false);
   const [partialOpen, setPartialOpen] = useState(false);
   const [partialAmount, setPartialAmount] = useState("");
+  const focusRef = useDialogFocus(mounted && open && Boolean(ticket));
 
+  // The portal target is available after hydration, never during server render.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
@@ -81,6 +85,8 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
 
   useEffect(() => {
     if (open) {
+      // Reopening or choosing another ticket starts a fresh review form.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(null);
       setBusy(null);
       setPartialOpen(false);
@@ -127,9 +133,9 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
   })();
 
   const noteForCurrent: string | null = (() => {
-    if (ticket.status === "APPROVED")  return "This ticket is currently approved. Changing status will notify the employee.";
-    if (ticket.status === "CLEARED")   return "This ticket has been cleared and reimbursed. Reverting will notify the employee.";
-    if (ticket.status === "REJECTED")  return "This ticket is currently rejected. Changing status will notify the employee.";
+    if (ticket.status === "APPROVED")  return "This ticket is currently approved. Review the status change before confirming.";
+    if (ticket.status === "CLEARED")   return "This ticket has been cleared and reimbursed. Reverting preserves the previously approved amount.";
+    if (ticket.status === "REJECTED")  return "This ticket is currently rejected. Review the status change before confirming.";
     if (ticket.status === "CANCELLED") return "This ticket was cancelled by the employee. Restoring puts it back into the pending queue.";
     return null;
   })();
@@ -188,6 +194,9 @@ export default function AdminReviewDialog({ open, ticket, onClose }: Props) {
     <div
       role="dialog"
       aria-modal="true"
+      aria-label={`Review ticket ${ticket.shortCode}`}
+      ref={focusRef}
+      tabIndex={-1}
       style={{
         position: "fixed",
         inset: 0,

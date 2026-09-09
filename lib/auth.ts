@@ -1,10 +1,19 @@
 import { cache } from "react";
+import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 
 const COOKIE_NAME = "rp_session";
 const MAX_AGE = 60 * 60 * 24 * 30;
+
+function tokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function validToken(token: string | undefined): token is string {
+  return typeof token === "string" && /^[a-f0-9]{64}$/.test(token);
+}
 
 export type CurrentUser = {
   empID: string;
@@ -23,9 +32,20 @@ function adminEmails(): Set<string> {
 }
 
 export async function setSessionEmail(email: string): Promise<void> {
+  if (!email.trim()) throw new Error("Session email is required");
   const c = await cookies();
-  c.set(COOKIE_NAME, email, {
+  const token = randomBytes(32).toString("hex");
+  // Revoke an existing session when signing in again on this browser.
+  const previous = c.get(COOKIE_NAME)?.value;
+  if (validToken(previous)) {
+    await prisma.reimbursementSession.deleteMany({ where: { tokenHash: tokenHash(previous) } });
+  }
+  await prisma.reimbursementSession.create({ data: {
+    tokenHash: tokenHash(token), email, expiresAt: new Date(Date.now() + MAX_AGE * 1000),
+  } });
+  c.set(COOKIE_NAME, token, {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: MAX_AGE,
@@ -34,12 +54,21 @@ export async function setSessionEmail(email: string): Promise<void> {
 
 export async function clearSession(): Promise<void> {
   const c = await cookies();
+  const token = c.get(COOKIE_NAME)?.value;
+  if (validToken(token)) {
+    await prisma.reimbursementSession.deleteMany({ where: { tokenHash: tokenHash(token) } });
+  }
   c.delete(COOKIE_NAME);
 }
 
 export async function getSessionEmail(): Promise<string | null> {
   const c = await cookies();
-  return c.get(COOKIE_NAME)?.value ?? null;
+  const token = c.get(COOKIE_NAME)?.value;
+  if (!validToken(token)) return null;
+  const session = await prisma.reimbursementSession.findUnique({
+    where: { tokenHash: tokenHash(token) },
+  });
+  return session && session.expiresAt.getTime() > Date.now() ? session.email : null;
 }
 
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {

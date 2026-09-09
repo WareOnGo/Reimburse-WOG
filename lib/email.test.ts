@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sendPartialApprovalEmail, type PartialApprovalEmail } from "./email";
 
@@ -14,11 +15,14 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 /** Returns the JSON payload posted to Resend for the most recent send. */
 function sentPayload(): { subject: string; html: string; text: string } {
+  expect(fetchMock).toHaveBeenCalledTimes(1);
   const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
   return JSON.parse(init.body as string);
 }
 
 beforeEach(() => {
+  vi.stubEnv("APP_BASE_URL", "");
+  vi.stubEnv("RESEND_REPLY_TO", "");
   vi.stubEnv("RESEND_API_KEY", "test-key");
   vi.stubEnv("RESEND_FROM", "noreply@wareongo.com");
   fetchMock = vi.fn(async () => ({ ok: true, text: async () => "" }));
@@ -46,8 +50,14 @@ describe("sendPartialApprovalEmail deal/client rows", () => {
     expect(text).toContain("Deal:           50,000 sqft — Bhiwandi, Mumbai");
 
     // The new rows must sit above the amounts, not displace them.
-    expect(html.indexOf("Client")).toBeLessThan(html.indexOf("Requested"));
-    expect(html.indexOf("Deal")).toBeLessThan(html.indexOf("Requested"));
+    const table = document.createElement("div");
+    table.innerHTML = html;
+    const rows = [...table.querySelectorAll("tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+    expect(rows).toEqual([
+      ["Client", "Delhivery Supply Chain Pvt Ltd"],
+      ["Deal", "50,000 sqft — Bhiwandi, Mumbai"],
+      ["Requested", "₹5,000"], ["Approved", "₹3,000"], ["Not approved", "₹2,000"],
+    ]);
     expect(text).toContain("Requested:      ₹5,000");
     expect(text).toContain("Approved:       ₹3,000");
   });

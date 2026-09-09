@@ -8,14 +8,21 @@ type Props = {
   previewUrl: string;
 };
 
-export default function AttachmentLink({ id: _id, name, sizeLabel, kind, previewUrl }: Props) {
+export default function AttachmentLink({ name, sizeLabel, kind, previewUrl }: Props) {
   function openFullscreen() {
     window.open(previewUrl, "_blank", "noopener,noreferrer");
   }
+  const keyboard = {
+    role: "button", tabIndex: 0, "aria-label": `Open attachment ${name}`,
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openFullscreen(); }
+    },
+  };
 
   if (kind === "IMAGE") {
     return (
       <figure
+        {...keyboard}
         className="media-tile"
         onClick={openFullscreen}
         style={{ cursor: "pointer" }}
@@ -36,6 +43,7 @@ export default function AttachmentLink({ id: _id, name, sizeLabel, kind, preview
   // DOCUMENT (PDF in practice)
   return (
     <figure
+      {...keyboard}
       className="media-tile"
       onClick={openFullscreen}
       style={{ cursor: "pointer" }}
@@ -43,6 +51,7 @@ export default function AttachmentLink({ id: _id, name, sizeLabel, kind, preview
     >
       <div className="media-tile-frame pdf-frame">
         <iframe
+          tabIndex={-1}
           src={`${previewUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
           title={name}
           loading="lazy"

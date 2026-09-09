@@ -21,7 +21,7 @@ Postgres, Cloudflare R2 for attachments, and Resend for notification email.
 | Files      | Cloudflare R2 (S3-compatible), browser uploads direct via presigned PUT |
 | Auth       | Hand-rolled Google OAuth 2.0 + httpOnly session cookie. No NextAuth |
 | Email      | Resend HTTP API (no SDK) |
-| Tests      | Vitest + Testing Library (jsdom) |
+| Tests      | Vitest (Node + jsdom), Testing Library, disposable Postgres, Playwright |
 
 ---
 
@@ -37,8 +37,10 @@ There is no password and no local user table of record. Identity comes from the 
    profile from Google's userinfo endpoint. The email must be `email_verified`.
 3. The email is looked up in `VerifiedNumber`. **No row, or no `empID` on the row → sign-in is
    refused** (`?error=not_on_file`). `is_active = false` → refused (`?error=inactive`).
-4. An `Employee` row is upserted for that `empID`, and the session cookie `rp_session` is set
-   to the email (httpOnly, SameSite=Lax, 30 days).
+4. An `Employee` row is upserted for that `empID`. `rp_session` contains a random 256-bit
+   token (httpOnly, SameSite=Lax, Secure in production, 30 days). Only its SHA-256 hash,
+   email and server-enforced expiry are stored in `ReimbursementSession`. Plain email
+   cookies are rejected; signing out revokes the server session.
 
 `lib/auth.ts` resolves the cookie into a `CurrentUser` on every request — `getCurrentUser()`
 (React-`cache`d per request), plus `requireUser()` / `requireAdmin()` which redirect. **Admin is
@@ -63,7 +65,7 @@ PENDING ──► REVIEW ──► APPROVED ──► CLEARED
 - **Admins** drive every other transition from `/admin`, including reopening (`→ PENDING`),
   reverting a cleared ticket, and restoring a cancelled one.
 - Every transition appends a `TicketEvent` row as an audit trail. Event writes are
-  fire-and-forget — a failed audit insert never fails the request.
+  best effort and awaited — a failed audit insert never fails the request.
 
 ### Partial approval
 
@@ -91,10 +93,12 @@ Uploads go browser → R2 directly; the app server only signs.
 1. Client compresses the file if it's a re-encodable image ≥300 KB — bounded to 1800 px at
    JPEG q0.82, which typically shrinks a phone photo 10–20× (`app/_components/upload.ts`).
 2. `POST /api/r2/sign` (auth required) returns a presigned PUT URL valid 300 s, keyed
-   `tickets/<ticketId|draft>/<uuid>-<safe-filename>`.
+   `tickets/employees/<encoded-empID>/<ticketId|draft>/<uuid>-<safe-filename>`.
 3. Client `PUT`s the bytes with progress, a 120 s timeout, and up to 3 attempts with backoff.
-   Every attempt re-signs, so an expired URL can't wedge a retry. 4xx fails fast.
-4. Client posts the ticket with `attachments[]` referencing the returned `r2Key`.
+   Every attempt re-signs. HTTP 408/429 and 5xx retry; other 4xx and explicit aborts fail fast.
+4. Client posts the ticket with `attachments[]` referencing the returned `r2Key`. The server
+   validates the employee namespace, image/PDF metadata, 25 MiB limit and actual object byte
+   count before associating it. Previously linked attachments keep their existing keys.
 
 Two deliberate quirks worth knowing before you "fix" them, both documented at their call sites:
 
@@ -184,6 +188,7 @@ that same email in `ADMIN_EMAILS` to see `/admin`.
 | `DIRECT_URL` | Supabase direct connection (port 5432). Prisma migrations only |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | R2 credentials |
 | `R2_BUCKET` | Bucket name |
+| `R2_ENDPOINT` | Optional S3-compatible endpoint for local testing; omit for Cloudflare R2 |
 | `R2_PUBLIC_BASE_URL` | Optional. Only used by the `publicUrl()` helper; normal downloads are presigned |
 | `ADMIN_EMAILS` | Comma-separated admin email allowlist |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | OAuth client. Redirect URI must match Google exactly |
@@ -214,7 +219,7 @@ introspected from the whole database, so most of what's in it (`Warehouse`, `War
 `Enquiry`, `Draft`, `MessageLog`, `opportunities`, `audit_logs`, …) belongs to other services.
 This app owns only:
 
-- `Employee`, `Ticket`, `Attachment`, `TicketEvent`
+- `Employee`, `Ticket`, `Attachment`, `TicketEvent`, `ReimbursementSession`
 - enums `TicketStatus`, `AttachmentKind`
 - and it *reads* `VerifiedNumber` for identity
 
@@ -235,30 +240,85 @@ Consequences:
 ## Testing and CI
 
 ```bash
-npm test          # vitest run
+npm test                  # fast Node/jsdom unit and handler tests, no services
 npm run test:watch
-npm run typecheck # tsc --noEmit
+npm run test:coverage     # complete source inventory + enforced coverage gates
+npm run test:mutations    # eight targeted regression checks in a temporary copy
+npm run lint -- --max-warnings=0
+npm run typecheck         # generate Next route types, then tsc --noEmit
 npm run build
+npm run test:integration  # starts and removes its own local Postgres
+npx playwright install chromium
+npm run test:e2e          # disposable Postgres + local storage + actual Next pages
 ```
 
-23 tests across `app/_components/upload.test.ts` (MIME resolution, compression, retry/backoff
-behaviour) and `app/_components/TicketForm.test.tsx`. `.github/workflows/ci.yml` runs
-`npm ci → typecheck → test` on Node 22 for pushes to `main` and all PRs — no database needed,
-since `prisma generate` only reads the schema.
+Use Node 22. `npm ci` installs the committed versions and generates Prisma without connecting
+to a database. The integration/browser scripts use `embedded-postgres`; its platform binary
+and postinstall scripts must be available. They need permission to bind loopback ports.
+On Linux, Playwright may require `npx playwright install --with-deps chromium`; an existing
+`/usr/bin/google-chrome` is used automatically, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
+
+The service harness creates a fresh `erp_test` database under the OS temporary directory,
+generates local credentials, and overrides database/provider settings. It never accepts a
+caller-supplied database URL or loads `.env`. Browser tests issue opaque sessions directly in
+the disposable DB; OAuth provider exchanges are covered separately with mocked HTTP. The
+local storage fixture exercises real presigning, uploads, metadata and preview requests, but
+does not validate AWS signatures. No real Google, Resend or Cloudflare account is needed.
+
+Vitest has separate `server` (Node) and `ui` (jsdom) projects. Server tests use real route
+handlers and Request/Response objects with mocked infrastructure. Financial/date/validation
+rules are tested through production helpers. Integration checks use real Prisma/Postgres for
+concurrency, rollback, relations, Decimal values and sessions. Browser checks cover routing,
+permissions, employee/finance flows, receipt uploads, logout and keyboard navigation.
+
+Coverage includes every `app/` and `lib/` TypeScript source file, including pages and unused
+legacy components. Unit coverage does not include browser/integration execution. Open
+`coverage/index.html`; machine-readable reports are `coverage/lcov.info` and
+`coverage/coverage-summary.json`. Global gates are 80% lines/statements and 75% branches/functions.
+Critical auth/domain/API files have individual 95% lines/statements/functions and 90% branches
+gates; active form/upload/admin modules have individual 90% lines/statements/functions and 85%
+branches gates. Raise the gates as coverage grows; do not exclude untested files to satisfy them.
+
+CI runs lint, generated-type checks, unit coverage, a production build, isolated database tests
+and Chromium browser tests on Node 22. It retains coverage and browser failure artifacts for
+14 days. The targeted mutation command is an additional local check of assertion strength,
+not an exhaustive mutation-testing score.
+
+See [UNIT_TEST_AUDIT.md](UNIT_TEST_AUDIT.md) for the original audit and
+[TEST_IMPLEMENTATION.md](TEST_IMPLEMENTATION.md) for implementation results and limitations.
+
+### Deploying the session change
+
+Before deploying this version, apply the additive
+[session SQL](prisma/sql/20260910_portal_sessions.sql) through the approved shared-database SQL
+process, then generate Prisma with `npm ci` or `npx prisma generate`. The new session model
+requires this table. **Do not run `prisma db push` or `prisma migrate`.** The SQL was applied via
+`prisma db execute` and verified on the configured shared database on 10 September 2026; see
+[TEST_IMPLEMENTATION.md](TEST_IMPLEMENTATION.md). Additional environments still require the SQL.
+The SQL enables row-level security without browser policies. The server connection must use
+the trusted table owner or a `BYPASSRLS` role; Supabase `anon`/`authenticated` roles must never
+read or create sessions directly.
+
+Existing email cookies will require users to sign in again. Coordinate deployment so older
+instances that still trust email cookies are removed. Existing in-progress uploads using old
+unscoped keys need to be selected/uploaded again. Historical linked receipts remain readable.
+Expired session rows do not authenticate; schedule deletion of rows whose `expiresAt` is in
+the past if retention grows. No cleanup scheduler is installed by this change.
 
 ---
 
 ## Implementation notes
 
-- **`shortCode` generation is not concurrency-safe.** `POST /api/tickets` reads the
-  most-recently-created ticket, parses `RB-####`, and increments (seeding at `RB-2001`). Two
-  simultaneous submissions can collide on the `@unique` constraint and one gets a 500. Fine at
-  current volume; a sequence is the fix if it ever bites. Note it orders by `createdAt`, not by
-  number, so it's the newest ticket's code that seeds the next one.
-- **Hot paths avoid round-trips deliberately.** The ticket routes run auth in `Promise.all`
-  alongside their first query, use `relationLoadStrategy: "join"`, and prefer a single `UPDATE`
-  over nested writes to dodge an implicit transaction. Keep that in mind before refactoring them
-  into sequential `await`s.
+- **`shortCode` allocation** uses a transaction-scoped Postgres advisory lock and the highest
+  numeric `RB-` suffix, starting at `RB-2001`. Allocation and creation commit together; legacy
+  malformed codes do not influence the next number. All writers must use this allocation path.
+- **Ticket changes** use an optimistic `updatedAt`/status condition. Conflicting edits return
+  `409` with a refresh/retry message. Attachment row removal and ticket changes commit in one
+  transaction; R2 cleanup happens after commit.
+- **Validation** rejects malformed object shapes, inherited/unknown status names, blank required
+  fields, invalid calendar dates, and amounts outside Decimal(12,2) or with more than two decimal
+  places. Zero requested amounts remain supported. Mixed edit/approval requests validate approval
+  against the new requested amount. Category remains a nonempty string for legacy compatibility.
 - **Deleted attachments** are removed from Postgres and then best-effort deleted from R2. A
   failed R2 delete leaves an orphaned object; nothing sweeps those up yet.
 - `/admin` presigns a download URL for every attachment on every render, so page cost grows with
