@@ -51,6 +51,40 @@ test("finance partially approves, clears and reverts without changing sanctioned
   await session(context, "employee@example.test"); await page.goto(`/dashboard/tickets/${shortCode}`);
   await expect(page.getByText(/^₹3,000\s*of ₹5,000$/).first()).toBeVisible(); await expect(page.getByRole("link", { name: "Edit", exact: true })).toHaveCount(0);
 });
+test("finance selects filtered approvals and clears them together while preserving partial amounts", async ({ page, context }) => {
+  const suffix = randomBytes(4).toString("hex");
+  const ids = ["partial", "full", "pending", "other"].map((name) => `bulk-${name}-${suffix}`);
+  await db.ticket.createMany({ data: ids.map((id, index) => ({
+    id, shortCode: id, title: `Bulk clearance ${suffix}`, category: "Travel", description: "Bulk browser case",
+    amount: index === 0 ? 5000 : 1200, approvedAmount: index === 0 ? 3000 : null,
+    status: index === 2 ? "PENDING" : "APPROVED", submittedByEmpID: index === 3 ? "EMP-2" : "EMP-1",
+  })) });
+  await session(context, "employee@example.test");
+  expect((await context.request.patch("/api/tickets/bulk-clear", { data: { ids: ids.slice(0, 2) } })).status()).toBe(403);
+  await session(context, "finance@example.test"); await page.goto("/admin");
+  await page.getByRole("searchbox").fill(`Bulk clearance ${suffix}`);
+  await page.getByRole("combobox").selectOption("EMP-1");
+  const first = page.getByRole("checkbox", { name: `Select ticket ${ids[0]}`, exact: true });
+  await first.focus(); await page.keyboard.press("Space"); await expect(first).toBeChecked();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const selectAll = page.getByRole("checkbox", { name: "Select all visible approved entries" });
+  await expect(selectAll).toBeChecked({ indeterminate: true }); await selectAll.check();
+  await expect(page.getByRole("checkbox", { name: `Select ticket ${ids[2]}`, exact: true })).toBeDisabled();
+  await expect(page.getByText("2 selected · ₹4,200 approved")).toBeVisible();
+  await page.getByRole("button", { name: "Mark selected as cleared" }).click();
+  const dialog = page.getByRole("dialog", { name: "Mark selected entries as cleared?" });
+  await expect(dialog).toContainText("2 entries totalling ₹4,200");
+  await dialog.getByRole("button", { name: "Clear 2 entries" }).click();
+  await expect(dialog).not.toBeVisible(); await expect(page.getByText("2 entries marked as cleared.")).toBeVisible();
+  for (const id of ids.slice(0, 2)) await expect(page.getByRole("row").filter({ has: page.getByRole("button", { name: `Review ticket ${id}`, exact: true }) }).getByText("cleared", { exact: true })).toBeVisible();
+  await expect(selectAll).toBeDisabled();
+  const saved = await db.ticket.findMany({ where: { id: { in: ids } }, include: { events: true } });
+  expect(saved.find((ticket) => ticket.id === ids[0])?.approvedAmount?.toString()).toBe("3000");
+  expect(saved.find((ticket) => ticket.id === ids[1])?.approvedAmount).toBeNull();
+  expect(saved.find((ticket) => ticket.id === ids[2])?.status).toBe("PENDING");
+  expect(saved.find((ticket) => ticket.id === ids[3])?.status).toBe("APPROVED");
+  expect(saved.flatMap((ticket) => ticket.events).map((event) => event.label)).toEqual(["Cleared by Finance", "Cleared by Finance"]);
+});
 test("another employee cannot read/edit a ticket or sign its attachment download", async ({ page, context }) => {
   const ticket = await db.ticket.create({ data: { shortCode: `OWN-${randomBytes(4).toString("hex")}`, title: "Private receipt", category: "Travel", description: "Private", amount: 10, submittedByEmpID: "EMP-1" } });
   const attachment = await db.attachment.create({ data: { ticketId: ticket.id, name: "test.pdf", kind: "DOCUMENT", contentType: "application/pdf", sizeBytes: 1, r2Key: "test-only/foreign.pdf" } });

@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import ConfirmDialog from "@/app/_components/ConfirmDialog";
 import AdminReviewDialog, { ReviewTicket } from "./AdminReviewDialog";
 
 type AttachmentLite = {
@@ -78,10 +80,18 @@ function toReviewTicket(e: AdminEntry): ReviewTicket {
 }
 
 export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }) {
+  const router = useRouter();
   const [status, setStatus] = useState<StatusFilter>("all");
   const [employee, setEmployee] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<AdminEntry | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [refreshing, startRefresh] = useTransition();
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const clearInFlight = useRef(false);
 
   const employees = useMemo(() => {
     const seen = new Map<string, string>();
@@ -116,6 +126,52 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
     });
   }, [entries, status, employee, query]);
 
+  const clearable = filtered.filter((entry) => entry.status === "APPROVED");
+  const selectedEntries = clearable.filter((entry) => selectedIds.has(entry.id));
+  const selectedCount = selectedEntries.length;
+  const selectedTotal = selectedEntries.reduce((total, entry) => total + (entry.approvedAmount ?? entry.amount), 0);
+  const allSelected = clearable.length > 0 && selectedCount === clearable.length;
+  const busy = clearing || refreshing;
+  const controlsDisabled = busy || confirmClear;
+
+  function resetSelection() {
+    setSelectedIds(new Set());
+    setBulkError(null);
+    setBulkMessage(null);
+  }
+
+  async function clearSelected() {
+    if (clearInFlight.current || selectedCount === 0) return;
+    clearInFlight.current = true;
+    setClearing(true);
+    setBulkError(null);
+    try {
+      const response = await fetch("/api/tickets/bulk-clear", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: selectedEntries.map((entry) => entry.id) }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        if (response.status === 409) {
+          setConfirmClear(false);
+          setSelectedIds(new Set());
+          startRefresh(() => router.refresh());
+        }
+        throw new Error(data?.error || `Could not clear entries (${response.status}). Please try again.`);
+      }
+      setBulkMessage(`${selectedCount} ${selectedCount === 1 ? "entry" : "entries"} marked as cleared.`);
+      setSelectedIds(new Set());
+      setConfirmClear(false);
+      startRefresh(() => router.refresh());
+    } catch (error) {
+      setBulkError(error instanceof Error ? error.message : "Could not clear entries. Please try again.");
+    } finally {
+      clearInFlight.current = false;
+      setClearing(false);
+    }
+  }
+
   return (
     <>
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
@@ -124,7 +180,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
             <div>
               <h2 style={{ margin: 0 }}>Entries</h2>
               <div className="sub" style={{ fontSize: "0.85rem", color: "var(--slate)" }}>
-                Click any row to review. Approve or reject pending entries from the review modal.
+                Click any row to review. Select approved entries to mark them as cleared together.
               </div>
             </div>
             <div style={{ color: "var(--slate)", fontSize: "0.82rem", whiteSpace: "nowrap" }}>
@@ -139,7 +195,8 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                   key={tab.id}
                   type="button"
                   className={status === tab.id ? "active" : ""}
-                  onClick={() => setStatus(tab.id)}
+                  disabled={controlsDisabled}
+                  onClick={() => { setStatus(tab.id); resetSelection(); }}
                 >
                   {tab.label}
                   <span className="count">{counts[tab.id]}</span>
@@ -152,12 +209,14 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                 type="search"
                 placeholder="Search ticket #, title, category, employee, deal, client…"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                disabled={controlsDisabled}
+                onChange={(e) => { setQuery(e.target.value); resetSelection(); }}
                 style={{ flex: 1, minWidth: 220 }}
               />
               <select
                 value={employee}
-                onChange={(e) => setEmployee(e.target.value)}
+                disabled={controlsDisabled}
+                onChange={(e) => { setEmployee(e.target.value); resetSelection(); }}
                 style={{ width: "auto", minWidth: 180 }}
               >
                 <option value="all">All employees</option>
@@ -171,10 +230,12 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                 <button
                   type="button"
                   className="icon-btn"
+                  disabled={controlsDisabled}
                   onClick={() => {
                     setStatus("all");
                     setEmployee("all");
                     setQuery("");
+                    resetSelection();
                   }}
                 >
                   Clear filters
@@ -182,12 +243,52 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
               )}
             </div>
           </div>
+
+          <div className="admin-bulk-actions">
+            <span role="status">
+              {selectedCount > 0
+                ? `${selectedCount} selected · ${formatINR(selectedTotal)} approved`
+                : "Select approved entries to clear."}
+            </span>
+            <div className="admin-bulk-buttons">
+              {selectedCount > 0 && (
+                <button type="button" className="btn btn-ghost btn-sm" disabled={controlsDisabled} onClick={resetSelection}>
+                  Clear selection
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-approve btn-sm"
+                disabled={controlsDisabled || selectedCount === 0}
+                aria-busy={busy}
+                onClick={() => { setBulkError(null); setBulkMessage(null); setConfirmClear(true); }}
+              >
+                Mark selected as cleared
+              </button>
+            </div>
+          </div>
+          {bulkMessage && <div role="status" style={{ marginTop: "0.65rem", color: "var(--ok)" }}>{bulkMessage}</div>}
+          {bulkError && !confirmClear && <div role="alert" style={{ marginTop: "0.65rem", color: "var(--bad)" }}>{bulkError}</div>}
         </div>
 
         <div style={{ overflowX: "auto" }}>
           <table className="admin-table admin-table-clickable">
             <thead>
               <tr>
+                <th className="selection-cell">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible approved entries"
+                    checked={allSelected}
+                    ref={(node) => { if (node) node.indeterminate = selectedCount > 0 && !allSelected; }}
+                    disabled={controlsDisabled || clearable.length === 0}
+                    onChange={() => {
+                      setSelectedIds(allSelected ? new Set() : new Set(clearable.map((entry) => entry.id)));
+                      setBulkError(null);
+                      setBulkMessage(null);
+                    }}
+                  />
+                </th>
                 <th>Ticket</th>
                 <th>Employee</th>
                 <th className="title-cell">Title / Details</th>
@@ -200,7 +301,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: "center", color: "var(--slate)", padding: "1.5rem" }}>
+                  <td colSpan={8} style={{ textAlign: "center", color: "var(--slate)", padding: "1.5rem" }}>
                     {entries.length === 0 ? "No tickets submitted." : "No tickets match your filters."}
                   </td>
                 </tr>
@@ -210,12 +311,31 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                 return (
                   <tr
                     key={e.id}
-                    onClick={() => setSelected(e)}
+                    className={e.status === "APPROVED" && selectedIds.has(e.id) ? "is-selected" : ""}
+                    onClick={() => { if (!controlsDisabled) setSelected(e); }}
                     style={{ cursor: "pointer" }}
                     title="Click to review"
                   >
+                    <td className="selection-cell" onClick={(event) => event.stopPropagation()} title={e.status === "APPROVED" ? "Select for clearing" : "Only approved entries can be cleared"}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ticket ${e.shortCode}`}
+                        checked={e.status === "APPROVED" && selectedIds.has(e.id)}
+                        disabled={controlsDisabled || e.status !== "APPROVED"}
+                        onChange={() => {
+                          setSelectedIds((current) => {
+                            const next = new Set(current);
+                            if (next.has(e.id)) next.delete(e.id);
+                            else next.add(e.id);
+                            return next;
+                          });
+                          setBulkError(null);
+                          setBulkMessage(null);
+                        }}
+                      />
+                    </td>
                     <td style={{ fontFamily: "var(--font-mono, ui-monospace)", fontSize: "0.82rem" }}>
-                      <button type="button" className="btn btn-ghost" style={{ padding: 0, font: "inherit" }} aria-label={`Review ticket ${e.shortCode}`} onClick={() => setSelected(e)}>
+                      <button type="button" className="btn btn-ghost" style={{ padding: 0, font: "inherit" }} aria-label={`Review ticket ${e.shortCode}`} disabled={controlsDisabled} onClick={() => setSelected(e)}>
                         {e.shortCode}
                       </button>
                     </td>
@@ -256,6 +376,21 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
         </div>
       </div>
 
+      <ConfirmDialog
+        open={confirmClear}
+        title="Mark selected entries as cleared?"
+        body={
+          <>
+            <p>{selectedCount} {selectedCount === 1 ? "entry" : "entries"} totalling <strong>{formatINR(selectedTotal)}</strong> will be marked as reimbursed.</p>
+            {bulkError && <div role="alert" style={{ color: "var(--bad)" }}>{bulkError}</div>}
+          </>
+        }
+        confirmLabel={`Clear ${selectedCount} ${selectedCount === 1 ? "entry" : "entries"}`}
+        primaryVariant="ok"
+        busy={busy}
+        onConfirm={clearSelected}
+        onClose={() => { setConfirmClear(false); setBulkError(null); }}
+      />
       <AdminReviewDialog
         open={selected !== null}
         ticket={selected ? toReviewTicket(selected) : null}

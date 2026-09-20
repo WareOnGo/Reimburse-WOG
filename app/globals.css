@@ -971,6 +971,30 @@ select {
 .admin-table tbody tr:last-child td { border-bottom: none; }
 .admin-table.admin-table-clickable tbody tr { transition: background 0.12s ease; }
 .admin-table.admin-table-clickable tbody tr:hover { background: var(--hover-bg); }
+.admin-table tbody tr.is-selected { background: var(--hover-bg); }
+.admin-table .selection-cell { width: 3rem; text-align: center; }
+.admin-table .selection-cell input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+.admin-table .selection-cell input:disabled { cursor: not-allowed; opacity: 0.45; }
+.admin-table .selection-cell input:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.admin-bulk-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--slate);
+}
+.admin-bulk-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .admin-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .admin-table .actions { display: flex; gap: 0.4rem; justify-content: flex-end; flex-wrap: wrap; }
 .admin-table .title-cell .title { font-weight: 600; color: var(--blue); }

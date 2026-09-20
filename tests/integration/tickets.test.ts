@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { clearSession, getCurrentUser, getSessionEmail, setSessionEmail } from "@/lib/auth";
 import { GET, POST } from "@/app/api/tickets/route";
 import { PATCH } from "@/app/api/tickets/[id]/route";
+import { PATCH as bulkClear } from "@/app/api/tickets/bulk-clear/route";
 
 const url = new URL(process.env.ERP_TEST_DATABASE_URL!);
 if (url.hostname !== "127.0.0.1" || url.pathname !== "/erp_test") throw new Error("Disposable test DB required");
@@ -78,6 +79,59 @@ it("preserves partial money through clearing and reversal", async () => {
     expect((await PATCH(request(body), { params: Promise.resolve({ id: ticket.shortCode }) })).status).toBe(200);
   }
   const saved = await prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id } }); expect(saved.status).toBe("APPROVED"); expect(saved.approvedAmount?.toString()).toBe("750.25");
+});
+it("bulk clears full and partial approvals with one audit event each and preserves unselected tickets", async () => {
+  const first = await make(); const second = await make(); const untouched = await make();
+  await signIn("finance@example.test");
+  for (const [ticket, approvedAmount] of [[first, 750.25], [second, null], [untouched, null]] as const) {
+    expect((await PATCH(request({ status: "APPROVED", approvedAmount }), { params: Promise.resolve({ id: ticket.id }) })).status).toBe(200);
+  }
+  const response = await bulkClear(request({ ids: [first.id, second.id, first.id] }));
+  expect(response.status).toBe(200); expect(await response.json()).toEqual({ ok: true, count: 2 });
+  const partial = await prisma.ticket.findUniqueOrThrow({ where: { id: first.id }, include: { events: true } });
+  const full = await prisma.ticket.findUniqueOrThrow({ where: { id: second.id }, include: { events: true } });
+  expect(partial.status).toBe("CLEARED"); expect(partial.amount.toString()).toBe("1250.25"); expect(partial.approvedAmount?.toString()).toBe("750.25");
+  expect(full.status).toBe("CLEARED"); expect(full.amount.toString()).toBe("1250.25"); expect(full.approvedAmount).toBeNull();
+  for (const ticket of [partial, full]) expect(ticket.events.filter((event) => event.label === "Cleared by Finance")).toHaveLength(1);
+  expect((await prisma.ticket.findUniqueOrThrow({ where: { id: untouched.id } })).status).toBe("APPROVED");
+});
+it("does not partially clear a selection with an ineligible or missing ticket", async () => {
+  const approved = await make(); const pending = await make(); await signIn("finance@example.test");
+  await PATCH(request({ status: "APPROVED" }), { params: Promise.resolve({ id: approved.id }) });
+  for (const other of [pending.id, "missing"]) {
+    expect((await bulkClear(request({ ids: [approved.id, other] }))).status).toBe(409);
+    expect((await prisma.ticket.findUniqueOrThrow({ where: { id: approved.id } })).status).toBe("APPROVED");
+  }
+  expect(await prisma.ticketEvent.count({ where: { label: "Cleared by Finance" } })).toBe(0);
+});
+it("rolls back all bulk status updates if recording their audit events fails", async () => {
+  const first = await make(); const second = await make(); await signIn("finance@example.test");
+  await prisma.ticket.updateMany({ data: { status: "APPROVED", approvedAmount: 750.25 } });
+  const before = await prisma.ticket.findMany({ orderBy: { id: "asc" } });
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_test_clear_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated event failure'; END $$`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_test_clear_event BEFORE INSERT ON "TicketEvent" FOR EACH ROW EXECUTE FUNCTION reject_test_clear_event()`);
+  try {
+    await expect(bulkClear(request({ ids: [first.id, second.id] }))).rejects.toThrow();
+    expect(await prisma.ticket.findMany({ orderBy: { id: "asc" } })).toEqual(before);
+    expect(await prisma.ticketEvent.count({ where: { label: "Cleared by Finance" } })).toBe(0);
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER reject_test_clear_event ON "TicketEvent"');
+    await prisma.$executeRawUnsafe("DROP FUNCTION reject_test_clear_event()");
+  }
+});
+it("commits only one overlapping bulk clearance and leaves the losing batch untouched", async () => {
+  const first = await make(); const shared = await make(); const last = await make();
+  await prisma.ticket.updateMany({ data: { status: "APPROVED" } }); await signIn("finance@example.test");
+  const responses = await Promise.all([
+    bulkClear(request({ ids: [first.id, shared.id] })),
+    bulkClear(request({ ids: [shared.id, last.id] })),
+  ]);
+  expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+  const cleared = await prisma.ticket.findMany({ where: { status: "CLEARED" } });
+  const expected = responses[0].status === 200 ? [first.id, shared.id] : [shared.id, last.id];
+  expect(cleared.map((ticket) => ticket.id).sort()).toEqual(expected.sort());
+  expect(await prisma.ticket.count({ where: { status: "APPROVED" } })).toBe(1);
+  expect(await prisma.ticketEvent.count({ where: { label: "Cleared by Finance" } })).toBe(2);
 });
 it("enforces employee ownership with actual Prisma relations", async () => {
   const ticket = await make(); await signIn("other@example.test");

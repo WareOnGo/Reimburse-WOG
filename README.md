@@ -64,8 +64,13 @@ PENDING ──► REVIEW ──► APPROVED ──► CLEARED
   Anything further along is read-only and the API returns `409`.
 - **Admins** drive every other transition from `/admin`, including reopening (`→ PENDING`),
   reverting a cleared ticket, and restoring a cancelled one.
-- Every transition appends a `TicketEvent` row as an audit trail. Event writes are
-  best effort and awaited — a failed audit insert never fails the request.
+- Admins can select approved entries individually or select all approved entries matching
+  the current filters, then confirm **Mark selected as cleared**. Changing filters resets
+  the selection. Bulk clearance preserves approved amounts and commits every selected
+  entry and its audit event together; missing, ineligible or concurrently changed entries
+  fail the entire batch with `409`.
+- Every transition appends a `TicketEvent` row as an audit trail. Individual ticket event
+  writes are best effort and awaited; bulk clearance includes them in its transaction.
 
 ### Partial approval
 
@@ -124,7 +129,7 @@ parent ticket (or is an admin) and returns a 300 s presigned GET.
 | `/dashboard/new` | employee | Raise a ticket — title, category, amount, expense date, description, multi-file drag-and-drop |
 | `/dashboard/tickets/[id]` | owner | Ticket detail, attachments, event timeline, edit + cancel actions. Accepts id or `shortCode` |
 | `/dashboard/tickets/[id]/edit` | owner | Edit while pending/review; add and remove attachments |
-| `/admin` | admin | Per-employee rollup table + full ticket table with status/employee/text filters, review dialog and attachment previews |
+| `/admin` | admin | Per-employee rollup table + full ticket table with status/employee/text filters, bulk clearance, review dialog and attachment previews |
 
 Categories are a fixed client-side list in `TicketForm.tsx`: Travel, Meals, Software,
 Office Supplies, Other.
@@ -136,6 +141,7 @@ Office Supplies, Other.
 | `GET /api/tickets` | Your tickets; admins get all |
 | `POST /api/tickets` | Create. Validates fields and a non-negative finite amount, assigns `shortCode`, nests attachments |
 | `PATCH /api/tickets/[id]` | One endpoint for both employee edits and admin status changes; authorization branches on which fields are present. Accepts id or `shortCode` |
+| `PATCH /api/tickets/bulk-clear` | Admin only. Accepts `{ ids: string[] }` of ticket IDs; atomically clears approved tickets and records their events. Returns `{ ok: true, count }` |
 | `POST /api/r2/sign` | Presigned upload URL. Auth required |
 | `GET /api/attachments/[id]/url` | Presigned download URL. Owner or admin only |
 | `GET /api/auth/google` · `GET /api/auth/google/callback` · `POST /api/auth/logout` | OAuth + session |
