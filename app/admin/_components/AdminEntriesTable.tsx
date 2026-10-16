@@ -84,7 +84,9 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
   const [status, setStatus] = useState<StatusFilter>("all");
   const [employee, setEmployee] = useState<string>("all");
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<AdminEntry | null>(null);
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  // Keep only the identity in state so a refresh also updates an open review.
+  const selected = entries.find((entry) => entry.id === reviewId) ?? null;
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -312,7 +314,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                   <tr
                     key={e.id}
                     className={e.status === "APPROVED" && selectedIds.has(e.id) ? "is-selected" : ""}
-                    onClick={() => { if (!controlsDisabled) setSelected(e); }}
+                    onClick={() => { if (!controlsDisabled) setReviewId(e.id); }}
                     style={{ cursor: "pointer" }}
                     title="Click to review"
                   >
@@ -335,7 +337,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
                       />
                     </td>
                     <td style={{ fontFamily: "var(--font-mono, ui-monospace)", fontSize: "0.82rem" }}>
-                      <button type="button" className="btn btn-ghost" style={{ padding: 0, font: "inherit" }} aria-label={`Review ticket ${e.shortCode}`} disabled={controlsDisabled} onClick={() => setSelected(e)}>
+                      <button type="button" className="btn btn-ghost" style={{ padding: 0, font: "inherit" }} aria-label={`Review ticket ${e.shortCode}`} disabled={controlsDisabled} onClick={() => setReviewId(e.id)}>
                         {e.shortCode}
                       </button>
                     </td>
@@ -394,7 +396,7 @@ export default function AdminEntriesTable({ entries }: { entries: AdminEntry[] }
       <AdminReviewDialog
         open={selected !== null}
         ticket={selected ? toReviewTicket(selected) : null}
-        onClose={() => setSelected(null)}
+        onClose={() => setReviewId(null)}
       />
     </>
   );

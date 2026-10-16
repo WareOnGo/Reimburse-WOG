@@ -315,12 +315,68 @@ the past if retention grows. No cleanup scheduler is installed by this change.
 
 ## Implementation notes
 
+- **Admin history export** is available from **Export history** on `/admin`. Both CSV
+  downloads and previews require an admin session. The modal pre-fills the earliest
+  ticket date through today in IST (or the latest ticket date if later); **All history**
+  restores this range. These defaults use the tickets already loaded by the admin page.
+  Exports are independent of the table's search, employee and status filters. Either
+  date may be cleared for an open-ended range. The inclusive range uses IST and matches **any** raised, approved (including
+  partial approval) or cleared date; each matching ticket appears once. Preview shows
+  the total count and up to five sample rows. Download queries all matching rows again,
+  so changes made after preview can affect the file. A small HEAD request checks
+  authorization before the browser starts downloading. Close cancels that check;
+  once the download starts, use the browser's download manager to cancel it.
+  Closing the modal does not interrupt an active browser download. HTML/JSON
+  errors are displayed in the modal instead of being saved as CSV files.
+- **Export amounts and dates** use two decimal places in INR. Approved amount is the
+  sanctioned amount for currently approved/cleared tickets; cleared amount is that
+  amount only for currently cleared tickets. Other statuses report zero in those
+  columns. Approval/clearance date columns show the latest recorded milestone, even
+  after a reversal; the history column preserves every recorded event. Older missing
+  events are not reconstructed from `updatedAt`, so missing milestone dates remain
+  blank. The date range selects activity; amounts are current balances, not balances
+  as of the selected dates. Earlier versions of amounts cannot be reconstructed from
+  the existing event labels. CSV is UTF-8 with a BOM, escaped text and spreadsheet
+  formula protection.
+- **Large exports** use a read-only, repeatable-read PostgreSQL cursor. Matching
+  IDs are scanned once and details/history are loaded in batches of 250 tickets.
+  CSV chunks follow browser backpressure, with one header/BOM. The browser streams
+  the attachment to its download manager without a JavaScript Blob. One database
+  connection/snapshot stays open until completion, cancellation or failure. Query
+  timeout is 30 seconds and total transaction timeout is 240 seconds (route budget
+  300 seconds). Configure hosting/proxies to support streaming and these durations;
+  exports exceeding them fail instead of silently completing a truncated file.
+  Jobs exceeding that budget still need a durable background-job service. Memory
+  follows the current batch, including its recorded events, not the whole history.
+- **Export SQL rollout**: apply [20261017_ticket_export_indexes.sql](prisma/sql/20261017_ticket_export_indexes.sql)
+  with `psql -v ON_ERROR_STOP=1 -f prisma/sql/20261017_ticket_export_indexes.sql`
+  using the deployment's direct database connection. This additive script uses
+  concurrent index creation; do not wrap it in a transaction or use Prisma schema
+  push/migrate on the shared database. It adds `(createdAt, id)` for ticket order,
+  `(ticketId, createdAt, id)` for event history, and a partial milestone/date index.
+  Preview and download use the same parameterized UNION of raised-date and
+  milestone-date scans, deduplicating before fetching full details. Blank dates
+  skip event matching altogether. The SQL is verified in disposable databases;
+  it has not been applied to the shared/live database by this change. After a
+  cancelled concurrent index build, check `pg_index.indisvalid` and repair any
+  invalid index before retrying: `IF NOT EXISTS` alone cannot repair one.
+  PostgreSQL documents the [cursor lifecycle](https://www.postgresql.org/docs/16/sql-declare.html)
+  and [partial-index predicate matching](https://www.postgresql.org/docs/16/indexes-partial.html).
+- **Export scale check**: `npm run test:integration -- tests/integration/ticket-export.test.ts`
+  generates 100,000 tickets and 400,000 events in a new disposable database, records
+  before/after EXPLAIN ANALYZE plans, checks snapshots across concurrent writes,
+  and writes `/tmp/erp-large-export.csv` and `/tmp/erp-large-export-report.json`.
+  It verifies bounded output chunks and records memory/timing without imposing
+  machine-dependent performance assertions. Browser tests additionally exercise
+  a 10,000-ticket native download and cancellation over HTTP.
 - **`shortCode` allocation** uses a transaction-scoped Postgres advisory lock and the highest
   numeric `RB-` suffix, starting at `RB-2001`. Allocation and creation commit together; legacy
   malformed codes do not influence the next number. All writers must use this allocation path.
 - **Ticket changes** use an optimistic `updatedAt`/status condition. Conflicting edits return
-  `409` with a refresh/retry message. Attachment row removal and ticket changes commit in one
-  transaction; R2 cleanup happens after commit.
+  `409` with a refresh/retry message. Submission, individual changes and bulk clearance
+  commit their history events in the same transaction as the ticket. A failed event write
+  rolls back the change and receipt-row changes. Event timestamps match the corresponding
+  ticket change; R2 cleanup and notifications happen after commit.
 - **Validation** rejects malformed object shapes, inherited/unknown status names, blank required
   fields, invalid calendar dates, and amounts outside Decimal(12,2) or with more than two decimal
   places. Zero requested amounts remain supported. Mixed edit/approval requests validate approval

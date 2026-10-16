@@ -36,6 +36,11 @@ try {
   const tokens = {};
   try {
     await client.query(await readFile("tests/database.sql", "utf8"));
+    const exportIndexes = await readFile("prisma/sql/20261017_ticket_export_indexes.sql", "utf8");
+    // CONCURRENTLY must run one statement per transaction, including on rerun.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      for (const statement of exportIndexes.split(";").filter((sql) => sql.trim())) await client.query(statement);
+    }
     await client.query(await readFile("prisma/sql/20260910_portal_sessions.sql", "utf8"));
     // Verify the additive rollout SQL can be applied twice safely.
     await client.query(await readFile("prisma/sql/20260910_portal_sessions.sql", "utf8"));

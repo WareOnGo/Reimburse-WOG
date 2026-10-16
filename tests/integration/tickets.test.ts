@@ -14,6 +14,7 @@ import { clearSession, getCurrentUser, getSessionEmail, setSessionEmail } from "
 import { GET, POST } from "@/app/api/tickets/route";
 import { PATCH } from "@/app/api/tickets/[id]/route";
 import { PATCH as bulkClear } from "@/app/api/tickets/bulk-clear/route";
+import { GET as exportTickets } from "@/app/api/tickets/export/route";
 
 const url = new URL(process.env.ERP_TEST_DATABASE_URL!);
 if (url.hostname !== "127.0.0.1" || url.pathname !== "/erp_test") throw new Error("Disposable test DB required");
@@ -30,11 +31,55 @@ beforeEach(async () => {
 });
 afterAll(() => prisma.$disconnect());
 
+it("exports each ticket once when any milestone falls within inclusive IST dates", async () => {
+  const start = new Date("2026-09-09T18:30:00.000Z");
+  const end = new Date("2026-09-10T18:30:00.000Z");
+  const old = new Date("2026-08-01T00:00:00Z");
+  const cases = [
+    { shortCode: "EXP-raised", createdAt: start, status: "PENDING" as const, events: [] },
+    { shortCode: "EXP-approved", createdAt: old, status: "APPROVED" as const, events: [
+      { label: "Partially approved by Finance (₹750.25 of ₹1,250.25)", createdAt: start },
+      { label: "Approved by Finance", createdAt: end },
+    ] },
+    { shortCode: "EXP-cleared", createdAt: old, status: "CLEARED" as const, events: [
+      { label: "Approved by Finance", createdAt: start },
+      { label: "Cleared by Finance", createdAt: new Date(end.getTime() - 1) },
+    ] },
+    { shortCode: "EXP-cancelled", createdAt: start, status: "CANCELLED" as const, events: [] },
+    { shortCode: "EXP-edited", createdAt: old, status: "PENDING" as const, events: [{ label: "Ticket edited", createdAt: start }] },
+    { shortCode: "EXP-before", createdAt: new Date(start.getTime() - 1), status: "PENDING" as const, events: [] },
+    { shortCode: "EXP-after", createdAt: old, status: "CLEARED" as const, events: [{ label: "Cleared by Finance", createdAt: end }] },
+  ];
+  for (const { events, ...data } of cases) await prisma.ticket.create({ data: {
+    ...valid, expenseDate: null, submittedByEmpID: "EMP-1", ...data, approvedAmount: 750.25,
+    events: { create: events },
+  } });
+  const read = (query: string) => exportTickets(new Request(`http://test.local/api/tickets/export?${query}`));
+  expect((await read("format=preview")).status).toBe(403);
+  await signIn("finance@example.test");
+  const preview = await (await read("format=preview&from=2026-09-10&to=2026-09-10")).json();
+  expect(preview.count).toBe(4);
+  expect(preview.rows.map((row: { shortCode: string }) => row.shortCode).sort()).toEqual(["EXP-approved", "EXP-cancelled", "EXP-cleared", "EXP-raised"]);
+  expect(preview.rows.find((row: { shortCode: string }) => row.shortCode === "EXP-cleared")).toMatchObject({
+    approvedAmount: "750.25", clearedAmount: "750.25", clearedAt: "2026-09-10 23:59:59.999",
+  });
+  // An earlier approval in range still matches even after a later approval.
+  expect(preview.rows.find((row: { shortCode: string }) => row.shortCode === "EXP-approved")).toMatchObject({ approvedAt: "2026-09-11 00:00:00.000", clearedAmount: "0.00" });
+  const csv = await (await read("format=csv&from=2026-09-10&to=2026-09-10")).text();
+  for (const row of cases) expect(csv.includes(`"${row.shortCode}"`)).toBe(["EXP-raised", "EXP-approved", "EXP-cleared", "EXP-cancelled"].includes(row.shortCode));
+  expect(csv.match(/"EXP-cleared"/g)).toHaveLength(1);
+  const allPreview = await (await read("format=preview")).json();
+  expect(allPreview.count).toBe(7); expect(allPreview.rows).toHaveLength(5);
+  const allCsv = await (await read("format=csv")).text();
+  for (const row of cases) expect(allCsv).toContain(`"${row.shortCode}"`);
+});
+
 it("round-trips Decimal/date, identity, attachments, and the audit event", async () => {
   const ticket = await make({ ...valid, attachments: [file] } as typeof valid);
   const saved = await prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id }, include: { attachments: true, events: true } });
   expect(saved.amount.toString()).toBe("1250.25"); expect(saved.expenseDate?.toISOString()).toBe("2026-09-10T00:00:00.000Z");
   expect(saved.submittedByEmpID).toBe("EMP-1"); expect(saved.attachments).toHaveLength(1); expect(saved.events.map((event) => event.label)).toEqual(["Ticket submitted"]);
+  expect(saved.events[0].createdAt).toEqual(saved.createdAt);
   const response = await GET(); expect(response.status).toBe(200); expect(await response.json()).toHaveLength(1);
 });
 it("allocates unique sequential codes under concurrent creation", async () => {
@@ -51,6 +96,17 @@ it("rolls back ticket creation when a nested attachment violates uniqueness", as
   await make({ ...valid, attachments: [file] } as typeof valid);
   await expect(POST(request({ ...valid, attachments: [file] }))).rejects.toMatchObject({ code: "P2002" });
   expect(await prisma.ticket.count()).toBe(1); expect(await prisma.attachment.count()).toBe(1);
+});
+it("rolls back a new ticket and its receipts if submission history fails", async () => {
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_test_submission_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated event failure'; END $$`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_test_submission_event BEFORE INSERT ON "TicketEvent" FOR EACH ROW EXECUTE FUNCTION reject_test_submission_event()`);
+  try {
+    await expect(POST(request({ ...valid, attachments: [file] }))).rejects.toThrow();
+    expect(await prisma.ticket.count()).toBe(0); expect(await prisma.attachment.count()).toBe(0);
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER reject_test_submission_event ON "TicketEvent"');
+    await prisma.$executeRawUnsafe("DROP FUNCTION reject_test_submission_event()");
+  }
 });
 it("rolls back both the edit and attachment removal if deletion fails", async () => {
   const ticket = await make({ ...valid, attachments: [file] } as typeof valid);
@@ -92,7 +148,10 @@ it("bulk clears full and partial approvals with one audit event each and preserv
   const full = await prisma.ticket.findUniqueOrThrow({ where: { id: second.id }, include: { events: true } });
   expect(partial.status).toBe("CLEARED"); expect(partial.amount.toString()).toBe("1250.25"); expect(partial.approvedAmount?.toString()).toBe("750.25");
   expect(full.status).toBe("CLEARED"); expect(full.amount.toString()).toBe("1250.25"); expect(full.approvedAmount).toBeNull();
-  for (const ticket of [partial, full]) expect(ticket.events.filter((event) => event.label === "Cleared by Finance")).toHaveLength(1);
+  for (const ticket of [partial, full]) {
+    const events = ticket.events.filter((event) => event.label === "Cleared by Finance");
+    expect(events).toHaveLength(1); expect(events[0].createdAt).toEqual(ticket.updatedAt);
+  }
   expect((await prisma.ticket.findUniqueOrThrow({ where: { id: untouched.id } })).status).toBe("APPROVED");
 });
 it("does not partially clear a selection with an ineligible or missing ticket", async () => {
@@ -117,6 +176,23 @@ it("rolls back all bulk status updates if recording their audit events fails", a
   } finally {
     await prisma.$executeRawUnsafe('DROP TRIGGER reject_test_clear_event ON "TicketEvent"');
     await prisma.$executeRawUnsafe("DROP FUNCTION reject_test_clear_event()");
+  }
+});
+it("rolls back an individual approval or clearance if its history cannot be recorded", async () => {
+  const ticket = await make(); await signIn("finance@example.test");
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_test_single_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated event failure'; END $$`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_test_single_event BEFORE INSERT ON "TicketEvent" FOR EACH ROW EXECUTE FUNCTION reject_test_single_event()`);
+  try {
+    for (const initial of ["PENDING", "APPROVED"] as const) {
+      await prisma.ticket.update({ where: { id: ticket.id }, data: { status: initial, approvedAmount: initial === "APPROVED" ? 750.25 : null } });
+      const before = await prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id }, include: { events: true } });
+      const body = initial === "PENDING" ? { status: "APPROVED", approvedAmount: 750.25 } : { status: "CLEARED" };
+      await expect(PATCH(request(body), { params: Promise.resolve({ id: ticket.id }) })).rejects.toThrow();
+      expect(await prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id }, include: { events: true } })).toEqual(before);
+    }
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER reject_test_single_event ON "TicketEvent"');
+    await prisma.$executeRawUnsafe("DROP FUNCTION reject_test_single_event()");
   }
 });
 it("commits only one overlapping bulk clearance and leaves the losing batch untouched", async () => {

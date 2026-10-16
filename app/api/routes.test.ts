@@ -31,7 +31,7 @@ const request = (body: unknown, method = "POST") => new Request("http://portal.t
 const ctx = (id = "RB-2001") => ({ params: Promise.resolve({ id }) });
 const edit = (body: unknown) => patch(request(body, "PATCH"), ctx());
 const badJson = () => new Request("http://portal.test/api/tickets", { method: "POST", body: "{" });
-const tx = { ticket: m.ticket, attachment: m.attachment, $queryRaw: m.query };
+const tx = { ticket: m.ticket, attachment: m.attachment, ticketEvent: m.ticketEvent, $queryRaw: m.query };
 function noWrites() {
   expect(m.ticket.create).not.toHaveBeenCalled(); expect(m.ticket.update).not.toHaveBeenCalled();
   expect(m.attachment.deleteMany).not.toHaveBeenCalled(); expect(m.remove).not.toHaveBeenCalled();
@@ -74,15 +74,18 @@ describe("ticket collection", () => {
   it("creates with normalized fields and authenticated ownership inside a transaction", async () => {
     const response = await create(request({ ...valid, title: " Dinner ", expenseDate: "2026-09-09", submittedByEmpID: "someone-else", attachments: [file] }));
     expect(response.status).toBe(201); expect(await response.json()).toEqual({ id: "ticket-2", shortCode: "RB-2002" });
-    expect(m.ticket.create).toHaveBeenCalledWith({ data: { ...valid, expenseDate: new Date("2026-09-09T00:00:00Z"), submittedByEmpID: "EMP-1", shortCode: "RB-2002", attachments: { create: [file] } }, select: { id: true, shortCode: true } });
+    expect(m.ticket.create).toHaveBeenCalledWith({ data: { ...valid, expenseDate: new Date("2026-09-09T00:00:00Z"), submittedByEmpID: "EMP-1", shortCode: "RB-2002", createdAt: expect.any(Date), attachments: { create: [file] } }, select: { id: true, shortCode: true } });
     expect(m.transaction).toHaveBeenCalledOnce(); expect(m.query).toHaveBeenCalledTimes(2);
     expect(m.metadata).toHaveBeenCalledWith(file.r2Key);
-    expect(m.ticketEvent.create).toHaveBeenCalledWith({ data: { ticketId: "ticket-2", label: "Ticket submitted" } });
+    expect(m.ticketEvent.create).toHaveBeenCalledWith({ data: { ticketId: "ticket-2", label: "Ticket submitted", createdAt: m.ticket.create.mock.calls[0][0].data.createdAt } });
   });
-  it("allows zero and omitted optional fields; audit failure is nonfatal", async () => {
-    m.ticketEvent.create.mockRejectedValue(new Error("audit offline"));
+  it("allows zero and omitted optional fields", async () => {
     expect((await create(request({ ...valid, amount: 0 }))).status).toBe(201);
     expect(m.ticket.create.mock.calls[0][0].data).toMatchObject({ amount: 0, expenseDate: null, attachments: undefined });
+  });
+  it("fails creation if its submission history cannot be written", async () => {
+    m.ticketEvent.create.mockRejectedValue(new Error("audit offline"));
+    await expect(create(request(valid))).rejects.toThrow("audit offline");
   });
   it.each([null, [], "body", { ...valid, title: "  " }, { ...valid, amount: -1 }, { ...valid, dealName: null }, { ...valid, expenseDate: "2026-02-30" }, { ...valid, attachments: [null] }])("rejects malformed creation %j without writes", async (body) => {
     expect((await create(request(body))).status).toBe(400); noWrites();
@@ -114,7 +117,7 @@ describe("ticket PATCH authorization", () => {
     expect((await edit({ title: " New ", expenseDate: null })).status).toBe(200);
     expect(m.ticket.findFirst.mock.calls[0][0].where).toEqual({ OR: [{ id: "RB-2001" }, { shortCode: "RB-2001" }] });
     expect(m.ticket.update.mock.calls[0][0]).toMatchObject({ where: { id: "ticket-1", updatedAt: existing.updatedAt, status }, data: { title: "New", expenseDate: null, dealName: undefined, approvedAmount: undefined } });
-    expect(m.ticketEvent.createMany.mock.calls[0][0].data).toEqual([{ ticketId: "ticket-1", label: "Ticket edited" }]);
+    expect(m.ticketEvent.createMany.mock.calls[0][0].data).toEqual([{ ticketId: "ticket-1", label: "Ticket edited", createdAt: m.ticket.update.mock.calls[0][0].data.updatedAt }]);
   });
   it.each(["APPROVED", "CLEARED", "REJECTED", "CANCELLED"] as const)("blocks owner editing and cancellation in %s", async (status) => {
     m.ticket.findFirst.mockResolvedValue({ ...existing, status });
@@ -174,11 +177,16 @@ describe("approval and side effects", () => {
   });
   it("only deletes matching attachment IDs and awaits best-effort cleanup", async () => {
     m.attachment.findMany.mockResolvedValue([{ id: "ours", r2Key: file.r2Key }]);
-    m.remove.mockRejectedValue(new Error("storage offline")); m.ticketEvent.createMany.mockRejectedValue(new Error("audit offline"));
+    m.remove.mockRejectedValue(new Error("storage offline"));
     expect((await edit({ removeAttachmentIds: ["ours", "foreign"] })).status).toBe(200);
     expect(m.attachment.findMany).toHaveBeenCalledWith({ where: { id: { in: ["ours", "foreign"] }, ticketId: "ticket-1" }, select: { id: true, r2Key: true } });
     expect(m.attachment.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["ours"] }, ticketId: "ticket-1" } });
     expect(m.remove).toHaveBeenCalledExactlyOnceWith(file.r2Key);
+  });
+  it("does not notify or clean up receipt files when writing history fails", async () => {
+    m.ticketEvent.createMany.mockRejectedValue(new Error("audit offline"));
+    await expect(edit({ status: "APPROVED", approvedAmount: 3000, removeAttachmentIds: ["ours"] })).rejects.toThrow("audit offline");
+    expect(m.remove).not.toHaveBeenCalled(); expect(m.email).not.toHaveBeenCalled();
   });
   it("does not delete attachments or notify when the update fails", async () => {
     m.ticket.update.mockRejectedValue(new Error("write failed"));

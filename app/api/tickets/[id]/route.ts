@@ -51,20 +51,30 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       : approvalAmount(body.status, existing.status, requestedAmount, body.approvedAmount);
     await verifyAttachments(body.addAttachments, user.empID);
 
+    const labels: string[] = [];
+    if (body.status !== undefined) labels.push(approvedAmount != null
+      ? `Partially approved by Finance (₹${approvedAmount.toLocaleString("en-IN")} of ₹${requestedAmount.toLocaleString("en-IN")})`
+      : STATUS_LABEL[body.status]);
+    if (body.editingFields && body.status === undefined) labels.push("Ticket edited");
+    // Use one timestamp for the change and its history, monotonically advancing
+    // even when two writes occur within a millisecond or the clock moves back.
+    const changedAt = new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1));
+
     // Conditional update detects another writer since our read. Attachment rows
-    // are removed only within this transaction, after acquiring the ticket lock.
+    // and history commit with the ticket so an export cannot miss a change.
     const removed = await prisma.$transaction(async (tx) => {
       await tx.ticket.update({
         where: { id: existing.id, updatedAt: existing.updatedAt, status: existing.status },
         data: { title: body.title, category: body.category, amount: body.amount,
-          // Always advance the version, even for writes within one millisecond
-          // or after a server clock correction.
-          updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)),
+          updatedAt: changedAt,
           description: body.description, expenseDate: body.expenseDate, dealName: body.dealName, clientName: body.clientName,
           status: body.status, approvedAmount,
           attachments: body.addAttachments.length ? { create: body.addAttachments } : undefined,
         },
         select: { id: true },
+      });
+      await tx.ticketEvent.createMany({
+        data: labels.map((label) => ({ ticketId: existing.id, label, createdAt: changedAt })),
       });
       if (!body.removeAttachmentIds.length) return [];
       const rows = await tx.attachment.findMany({
@@ -74,15 +84,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       return rows;
     });
 
-    const labels: string[] = [];
-    if (body.status !== undefined) labels.push(approvedAmount != null
-      ? `Partially approved by Finance (₹${approvedAmount.toLocaleString("en-IN")} of ₹${requestedAmount.toLocaleString("en-IN")})`
-      : STATUS_LABEL[body.status]);
-    if (body.editingFields && body.status === undefined) labels.push("Ticket edited");
-    await Promise.all([
-      labels.length ? prisma.ticketEvent.createMany({ data: labels.map((label) => ({ ticketId: existing.id, label })) }).catch(() => {}) : Promise.resolve(),
-      ...removed.map((a) => deleteObject(a.r2Key).catch(() => {})),
-    ]);
+    await Promise.all(removed.map((a) => deleteObject(a.r2Key).catch(() => {})));
     if (approvedAmount != null && Number(existing.approvedAmount ?? -1) !== approvedAmount) {
       const vn = existing.submittedBy.verifiedNumber;
       if (vn?.email) await sendPartialApprovalEmail({

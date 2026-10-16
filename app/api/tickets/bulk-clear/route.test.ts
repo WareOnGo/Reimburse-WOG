@@ -54,7 +54,8 @@ describe("bulk clearance", () => {
       data: { status: "CLEARED", updatedAt: new Date(updatedAt.getTime() + 1) },
     });
     expect(m.ticketEvent.createMany).toHaveBeenCalledExactlyOnceWith({ data: [
-      { ticketId: "first", label: "Cleared by Finance" }, { ticketId: "second", label: "Cleared by Finance" },
+      { ticketId: "first", label: "Cleared by Finance", createdAt: new Date(updatedAt.getTime() + 1) },
+      { ticketId: "second", label: "Cleared by Finance", createdAt: new Date(updatedAt.getTime() + 1) },
     ] });
   });
   it.each(["PENDING", "REVIEW", "CLEARED", "REJECTED", "CANCELLED"])("rejects the entire selection when one ticket is %s", async (status) => {

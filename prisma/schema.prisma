@@ -129,6 +129,7 @@ model Ticket {
   @@index([submittedByEmpID])
   @@index([status])
   @@index([createdAt])
+  @@index([createdAt, id])
 }
 
 model Attachment {
@@ -153,6 +154,8 @@ model TicketEvent {
   ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   @@index([ticketId])
+  @@index([ticketId, createdAt, id])
+  // Partial milestone/date index is maintained by 20261017_ticket_export_indexes.sql.
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.

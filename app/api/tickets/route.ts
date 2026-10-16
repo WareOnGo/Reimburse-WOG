@@ -39,14 +39,16 @@ export async function POST(req: Request) {
     await verifyAttachments(attachments, user.empID);
     const ticket = await prisma.$transaction(async (tx) => {
       const shortCode = await nextTicketCode(tx);
-      return tx.ticket.create({
+      const createdAt = new Date();
+      const created = await tx.ticket.create({
         data: { ...fields, shortCode, submittedByEmpID: user.empID,
+          createdAt,
           attachments: attachments.length ? { create: attachments } : undefined },
         select: { id: true, shortCode: true },
       });
+      await tx.ticketEvent.create({ data: { ticketId: created.id, label: "Ticket submitted", createdAt } });
+      return created;
     });
-    // Best-effort audit is awaited so the runtime can complete the attempt.
-    await prisma.ticketEvent.create({ data: { ticketId: ticket.id, label: "Ticket submitted" } }).catch(() => {});
     return NextResponse.json(ticket, { status: 201 });
   } catch (error) {
     if (error instanceof InputError) return NextResponse.json({ error: error.message }, { status: 400 });

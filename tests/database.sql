@@ -27,6 +27,9 @@ CREATE TABLE "TicketEvent" (
   id TEXT PRIMARY KEY, "ticketId" TEXT NOT NULL REFERENCES "Ticket"(id) ON DELETE CASCADE,
   label TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Existing production indexes, before the additive export rollout.
+CREATE INDEX "Ticket_createdAt_idx" ON "Ticket" ("createdAt");
+CREATE INDEX "TicketEvent_ticketId_idx" ON "TicketEvent" ("ticketId");
 INSERT INTO "VerifiedNumber" (phone_number, name, email, "empID") VALUES
   ('10001', 'Test Employee', 'employee@example.test', 'EMP-1'),
   ('10002', 'Test Finance', 'finance@example.test', 'FIN-1'),

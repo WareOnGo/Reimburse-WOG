@@ -34,6 +34,7 @@ export async function PATCH(req: Request) {
 
       // Match every version read above. A competing edit rolls back the whole
       // batch, including any rows this update successfully matched.
+      const changedAt = new Date(tickets.reduce((latest, ticket) => Math.max(latest, ticket.updatedAt.getTime() + 1), Date.now()));
       const updated = await tx.ticket.updateMany({
         where: {
           status: "APPROVED",
@@ -41,13 +42,13 @@ export async function PATCH(req: Request) {
         },
         data: {
           status: "CLEARED",
-          updatedAt: new Date(tickets.reduce((latest, ticket) => Math.max(latest, ticket.updatedAt.getTime() + 1), Date.now())),
+          updatedAt: changedAt,
         },
       });
       if (updated.count !== ids.length) throw new BulkClearConflict();
 
       await tx.ticketEvent.createMany({
-        data: ids.map((ticketId) => ({ ticketId, label: "Cleared by Finance" })),
+        data: ids.map((ticketId) => ({ ticketId, label: "Cleared by Finance", createdAt: changedAt })),
       });
     });
 

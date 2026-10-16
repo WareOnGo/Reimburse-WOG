@@ -32,6 +32,15 @@
 
 * { box-sizing: border-box; }
 
+html { scrollbar-gutter: stable; }
+
+/* Keep the page still until the last modal closes, including portal dialogs. */
+html:has([role="dialog"][aria-modal="true"]),
+body:has([role="dialog"][aria-modal="true"]) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -1050,6 +1059,36 @@ select {
   font-size: 0.85rem;
 }
 
+/* Admin history export */
+.export-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(10, 34, 57, 0.45);
+}
+.export-dialog { display: flex; flex-direction: column; width: 100%; max-width: 960px; max-height: 90dvh; overflow: hidden; overscroll-behavior: contain; }
+.export-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-bottom: 1rem; flex-shrink: 0; }
+.export-heading p { color: var(--slate); font-size: 0.9rem; }
+.export-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.export-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; max-width: 520px; }
+.export-dates .field { margin-bottom: 0.5rem; min-width: 0; }
+.export-hint { color: var(--slate); font-size: 0.82rem; }
+.export-reset { margin-bottom: 1rem; }
+.export-preview { border: var(--stroke) solid var(--line-soft); border-radius: var(--radius-sm); padding: 1rem; margin-top: 1rem; }
+.export-count { color: var(--blue); font-size: 1.2rem; font-weight: 600; margin-bottom: 0.2rem; }
+.export-table-scroll { max-height: 240px; overflow: auto; margin-top: 1rem; }
+.export-table { font-size: 0.8rem; }
+.export-table th { white-space: nowrap; position: sticky; top: 0; background: var(--ivory-soft); }
+.export-table td { min-width: 120px; }
+.export-table .num { font-variant-numeric: tabular-nums; }
+.export-notes { margin: 1rem 0; }
+.export-error { color: var(--bad); }
+.export-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.5rem; flex-shrink: 0; padding-top: 1rem; border-top: var(--stroke) solid var(--line-soft); }
+
 /* Mobile */
 @media (max-width: 720px) {
   body { font-size: 14px; }
@@ -1094,4 +1133,5 @@ select {
   .tcard .t-side > div:first-child { justify-content: space-between; }
   .tcard .t-actions { justify-content: flex-end; flex-wrap: wrap; }
   .stat-card .stat-value { font-size: 1.6rem; }
+  .export-dates { grid-template-columns: 1fr; gap: 0.5rem; }
 }

@@ -38,6 +38,26 @@ it("maps the selected entry into a review dialog and displays sanctioned money",
   fireEvent.click(dialog.getByRole("button", { name: "Close" })); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
+it("updates an open review when refreshed status and approved amount arrive", () => {
+  const { rerender } = render(<AdminEntriesTable entries={[{ ...base, status: "PENDING", approvedAmount: null }]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Review ticket RB-1" }));
+  expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  // A fast reopen can precede router.refresh(). The open dialog must receive
+  // the same fresh ticket data as the table when that response arrives.
+  rerender(<AdminEntriesTable entries={[base]} />);
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByRole("button", { name: "Mark as cleared" })).toBeInTheDocument();
+  expect(dialog.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  expect(dialog.getByText("₹3,000")).toBeInTheDocument();
+});
+
+it("closes a review when its ticket disappears from refreshed data", () => {
+  const { rerender } = render(<AdminEntriesTable entries={[base]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Review ticket RB-1" }));
+  rerender(<AdminEntriesTable entries={[]} />);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
 it("only selects approved rows and keeps selection clicks separate from review", async () => {
   const user = userEvent.setup(); render(<AdminEntriesTable entries={entries} />);
   expect(bulkButton()).toBeDisabled();

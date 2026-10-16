@@ -2,6 +2,7 @@ import { employeeTotals } from "@/lib/totals";
 import { prisma } from "@/lib/prisma";
 import { getDownloadUrl } from "@/lib/r2";
 import AdminEntriesTable, { AdminEntry } from "./_components/AdminEntriesTable";
+import ExportTicketsButton from "./_components/ExportTicketsButton";
 
 export const dynamic = "force-dynamic";
 
@@ -116,6 +117,8 @@ export default async function AdminPage() {
             Review pending submissions and act on them. Review status and approved amounts before making changes.
           </div>
         </div>
+        <ExportTicketsButton firstTicketAt={tickets.at(-1)?.createdAt.toISOString() ?? null}
+          lastTicketAt={tickets[0]?.createdAt.toISOString() ?? null} />
       </div>
 
       <div className="card" style={{ marginBottom: "1.5rem", padding: 0, overflow: "hidden" }}>
