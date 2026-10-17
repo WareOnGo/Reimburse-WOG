@@ -356,8 +356,10 @@ the past if retention grows. No cleanup scheduler is installed by this change.
   `(ticketId, createdAt, id)` for event history, and a partial milestone/date index.
   Preview and download use the same parameterized UNION of raised-date and
   milestone-date scans, deduplicating before fetching full details. Blank dates
-  skip event matching altogether. The SQL is verified in disposable databases;
-  it has not been applied to the shared/live database by this change. After a
+  skip event matching altogether. The SQL is verified in disposable databases.
+  The shared/live database rollout completed on 18 October 2026: all three indexes
+  were verified ready and valid, with live query plans using the milestone/date
+  and ticket-order indexes. After a
   cancelled concurrent index build, check `pg_index.indisvalid` and repair any
   invalid index before retrying: `IF NOT EXISTS` alone cannot repair one.
   PostgreSQL documents the [cursor lifecycle](https://www.postgresql.org/docs/16/sql-declare.html)
